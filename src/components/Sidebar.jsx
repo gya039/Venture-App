@@ -43,58 +43,54 @@ function UserInitials({ email }) {
 }
 
 export default function Sidebar() {
-  const pathname = usePathname();
-  const { user } = useAuth();
-  // Always false on server → same render server+client → no hydration mismatch
+  const pathname  = usePathname();
+  const { user }  = useAuth();
   const [collapsed, setCollapsed] = useState(false);
-
   const width = collapsed ? 64 : 240;
 
   return (
     <aside style={{
-      width,
-      minWidth: width,
-      height: '100vh',
-      position: 'sticky',
-      top: 0,
-      background: '#FFFFFF',
-      borderRight: '1px solid var(--border)',
-      display: 'flex',
-      flexDirection: 'column',
-      transition: 'width 0.2s ease',
-      overflow: 'hidden',
-      zIndex: 50,
-      flexShrink: 0,
+      width, minWidth: width,
+      height:    '100vh',
+      position:  'sticky',
+      top:       0,
+      background:'var(--surface)',
+      borderRight:'1px solid var(--border)',
+      display:   'flex',
+      flexDirection:'column',
+      transition:'width 0.2s ease',
+      overflow:  'hidden',
+      zIndex:    50,
+      flexShrink:0,
     }}>
 
-      {/* Logo + collapse */}
+      {/* ── Logo + collapse ──────────────────────────────────── */}
       <div style={{
-        padding: collapsed ? '20px 0' : '20px',
-        borderBottom: '1px solid var(--border)',
-        display: 'flex',
-        alignItems: 'center',
+        padding:  collapsed ? '20px 0' : '20px',
+        borderBottom:'1px solid var(--border)',
+        display:  'flex',
+        alignItems:'center',
         justifyContent: collapsed ? 'center' : 'space-between',
         minHeight: 64,
+        position: 'relative',
       }}>
         {!collapsed && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 28, height: 28, borderRadius: 7,
-              background: 'linear-gradient(135deg, #1B2B4B, #2D4270)',
+              background: 'linear-gradient(135deg, #f59e0b, #f97316)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontFamily: 'Fraunces, Georgia, serif',
-              fontWeight: 700, color: '#D4A84B', fontSize: '0.95rem', flexShrink: 0,
+              fontWeight: 800, color: '#000', fontSize: '0.95rem', flexShrink: 0,
             }}>V</div>
-            <span style={{ fontFamily: 'Fraunces, Georgia, serif', fontWeight: 600, fontSize: '1rem', color: 'var(--primary)', letterSpacing: '-0.01em' }}>Venture</span>
+            <span style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--text-primary)', letterSpacing: '-0.01em' }}>Venture</span>
           </div>
         )}
         {collapsed && (
           <div style={{
             width: 28, height: 28, borderRadius: 7,
-            background: 'linear-gradient(135deg, #1B2B4B, #2D4270)',
+            background: 'linear-gradient(135deg, #f59e0b, #f97316)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'Fraunces, Georgia, serif',
-            fontWeight: 700, color: '#D4A84B', fontSize: '0.95rem',
+            fontWeight: 800, color: '#000', fontSize: '0.95rem',
           }}>V</div>
         )}
         {!collapsed && (
@@ -111,7 +107,13 @@ export default function Sidebar() {
         {collapsed && (
           <button
             onClick={() => setCollapsed(false)}
-            style={{ position: 'absolute', top: 20, right: -12, background: '#fff', border: '1px solid var(--border)', borderRadius: '50%', width: 24, height: 24, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', boxShadow: 'var(--shadow-sm)', zIndex: 1 }}
+            style={{
+              position: 'absolute', top: 20, right: -12,
+              background: 'var(--surface)', border: '1px solid var(--border)',
+              borderRadius: '50%', width: 24, height: 24,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--text-muted)', boxShadow: 'var(--shadow-sm)', zIndex: 1,
+            }}
             title="Expand sidebar"
           >
             <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
@@ -121,8 +123,8 @@ export default function Sidebar() {
         )}
       </div>
 
-      {/* Nav */}
-      <nav style={{ padding: '12px 10px', display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
+      {/* ── Nav ──────────────────────────────────────────────── */}
+      <nav style={{ padding: '12px 8px', display: 'flex', flexDirection: 'column', gap: 2, flex: 1 }}>
         {NAV.map(({ href, label, icon }) => {
           const active = pathname === href || (href !== '/' && pathname?.startsWith(href));
           return (
@@ -131,41 +133,52 @@ export default function Sidebar() {
               href={href}
               title={collapsed ? label : undefined}
               style={{
-                display: 'flex',
+                display:    'flex',
                 alignItems: 'center',
-                gap: collapsed ? 0 : 10,
+                gap:        collapsed ? 0 : 10,
                 justifyContent: collapsed ? 'center' : 'flex-start',
-                padding: collapsed ? '10px' : '9px 12px',
+                padding:    collapsed ? '10px' : '9px 10px 9px 14px',
                 borderRadius: 10,
-                color: active ? '#FFFFFF' : 'var(--text-secondary)',
-                background: active ? 'var(--primary)' : 'transparent',
+                color:      active ? 'var(--accent)' : 'var(--text-secondary)',
+                background: active ? 'var(--accent-dim)' : 'transparent',
+                borderLeft: active ? '2px solid var(--accent)' : '2px solid transparent',
                 textDecoration: 'none',
-                fontSize: '0.875rem',
+                fontSize:   '0.875rem',
                 fontWeight: active ? 600 : 400,
-                transition: 'background 0.15s, color 0.15s',
+                transition: 'background 0.15s, color 0.15s, border-color 0.15s',
                 whiteSpace: 'nowrap',
-                overflow: 'hidden',
+                overflow:   'hidden',
               }}
-              onMouseEnter={(e) => { if (!active) { e.currentTarget.style.background = 'var(--border-subtle)'; e.currentTarget.style.color = 'var(--text-primary)'; }}}
-              onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}}
+              onMouseEnter={(e) => {
+                if (!active) {
+                  e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                  e.currentTarget.style.color = 'var(--text-primary)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!active) {
+                  e.currentTarget.style.background = 'transparent';
+                  e.currentTarget.style.color = 'var(--text-secondary)';
+                }
+              }}
             >
-              <span style={{ flexShrink: 0, opacity: active ? 1 : 0.75 }}>{icon}</span>
+              <span style={{ flexShrink: 0, opacity: active ? 1 : 0.6 }}>{icon}</span>
               {!collapsed && <span>{label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      {/* New Trip CTA */}
-      <div style={{ padding: '8px 10px' }}>
+      {/* ── New Trip CTA ─────────────────────────────────────── */}
+      <div style={{ padding: '8px' }}>
         <Link
           href="/trips/new"
           title={collapsed ? 'New Trip' : undefined}
           style={{
             display: 'flex', alignItems: 'center',
-            justifyContent: collapsed ? 'center' : 'center',
+            justifyContent: 'center',
             gap: 6, padding: collapsed ? '10px' : '10px 14px',
-            background: 'var(--accent)', color: '#1B2B4B',
+            background: 'var(--accent)', color: '#000',
             borderRadius: 10, fontWeight: 700, fontSize: '0.85rem',
             textDecoration: 'none', width: '100%',
             transition: 'background 0.15s',
@@ -180,20 +193,20 @@ export default function Sidebar() {
         </Link>
       </div>
 
-      {/* User */}
+      {/* ── User ─────────────────────────────────────────────── */}
       <div style={{
         borderTop: '1px solid var(--border)',
-        padding: collapsed ? '14px 0' : '14px 16px',
-        display: 'flex',
-        alignItems: 'center',
+        padding:   collapsed ? '14px 0' : '14px 12px',
+        display:   'flex',
+        alignItems:'center',
         justifyContent: collapsed ? 'center' : 'flex-start',
         gap: 10,
       }}>
         <div style={{
           width: 32, height: 32, borderRadius: '50%',
-          background: 'linear-gradient(135deg, #1B2B4B, #2D4270)',
+          background: 'linear-gradient(135deg, #f59e0b, #f97316)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#D4A84B', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0,
+          color: '#000', fontSize: '0.72rem', fontWeight: 700, flexShrink: 0,
         }}>
           {user ? <UserInitials email={user.email} /> : '?'}
         </div>
