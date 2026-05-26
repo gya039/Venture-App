@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useAuth } from './useAuth';
 import { getDayPlans, getDayPlanSpots, getCachedSpots } from '@/lib/db';
 
 /**
@@ -15,27 +16,29 @@ import { getDayPlans, getDayPlanSpots, getCachedSpots } from '@/lib/db';
  *   loading, error, refetch
  */
 export function useDayPlanner(destId, city) {
+  const { user, authReady } = useAuth();
+
   const [days,    setDays]    = useState([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
 
   const fetchData = async () => {
-    if (!destId || !city) { setLoading(false); return; }
+    if (!destId || !city || !authReady || !user) { setLoading(false); return; }
     setLoading(true);
     setError(null);
 
     try {
-      // 1. Day plans for this destination
-      const plans = await getDayPlans(destId);
+      // 1. Day plans for this destination (userId required by Firestore security rule)
+      const plans = await getDayPlans(destId, user.uid);
 
       // 2. All researched spots for the city (one batch read)
       const allSpots = await getCachedSpots(city);
       const spotMap  = Object.fromEntries(allSpots.map(s => [s.id, s]));
 
       // 3. Day plan spots for each plan
-      const days = await Promise.all(plans.map(async (plan) => {
-        const dpSpots  = await getDayPlanSpots(plan.id);
-        const assembled = dpSpots
+      const assembled = await Promise.all(plans.map(async (plan) => {
+        const dpSpots = await getDayPlanSpots(plan.id);
+        const spots   = dpSpots
           .map(dps => {
             const spot = spotMap[dps.spotId];
             if (!spot) return null;
@@ -47,12 +50,11 @@ export function useDayPlanner(destId, city) {
             return (order[a.timeOfDay] ?? 3) - (order[b.timeOfDay] ?? 3) || a.sortOrder - b.sortOrder;
           });
 
-        const totalCost = assembled.reduce((sum, s) => sum + (s.entryPrice ?? 0), 0);
-
-        return { ...plan, spots: assembled, totalCost };
+        const totalCost = spots.reduce((sum, s) => sum + (s.entryPrice ?? 0), 0);
+        return { ...plan, spots, totalCost };
       }));
 
-      setDays(days);
+      setDays(assembled);
     } catch (err) {
       console.error('useDayPlanner error:', err);
       setError(err.message);
@@ -61,7 +63,7 @@ export function useDayPlanner(destId, city) {
     }
   };
 
-  useEffect(() => { fetchData(); }, [destId, city]); // eslint-disable-line
+  useEffect(() => { fetchData(); }, [destId, city, authReady, user?.uid]); // eslint-disable-line
 
   return { days, loading, error, refetch: fetchData };
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { useAuth } from '@/hooks/useAuth';
 import { getSpot, getDayPlans, addSpotToDayPlan } from '@/lib/db';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { INTERESTS } from '@/constants/interests';
@@ -22,6 +23,7 @@ const TIME_OPTIONS = ['morning', 'afternoon', 'evening'];
 export default function SpotDetailPage() {
   const { id: spotId } = useParams();
   const searchParams   = useSearchParams();
+  const { user }       = useAuth();
 
   const city   = searchParams.get('city')   ?? '';
   const destId = searchParams.get('destId') ?? '';
@@ -52,10 +54,10 @@ export default function SpotDetailPage() {
   /* ── Load day plans when picker opens ──────────────────────────────────── */
   const openDayPicker = async () => {
     setShowDayPicker(true);
-    if (!destId || dayPlans.length > 0) return;
+    if (!destId || !user?.uid || dayPlans.length > 0) return;
     setDayPlansLoad(true);
     try {
-      const plans = await getDayPlans(destId);
+      const plans = await getDayPlans(destId, user.uid);
       setDayPlans(plans);
       if (plans.length > 0) setSelectedDay(plans[0].id);
     } catch (err) {

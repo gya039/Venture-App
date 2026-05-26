@@ -325,10 +325,13 @@ export async function getSpot(city, spotId) {
 // Day Plans
 // ---------------------------------------------------------------------------
 
-export async function getDayPlans(destinationId) {
+export async function getDayPlans(destinationId, userId) {
+  // userId is required — security rule checks resource.data.userId == request.auth.uid
+  // so the query must include a userId filter or Firestore will reject it wholesale.
   const q = query(
     collection(db, 'dayPlans'),
     where('destinationId', '==', destinationId),
+    where('userId', '==', userId),
     orderBy('dayNumber', 'asc')
   );
   const snaps = await getDocs(q);
