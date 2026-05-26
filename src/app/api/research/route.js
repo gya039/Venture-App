@@ -5,6 +5,9 @@
 
 import { NextResponse } from 'next/server';
 
+// Allow up to 60s on Vercel Hobby plan (default is 10s)
+export const maxDuration = 60;
+
 const buildPrompt = (city, interests) => `
 You are a travel researcher specialising in hidden gems and authentic local experiences.
 

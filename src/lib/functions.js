@@ -24,12 +24,26 @@ export async function runResearch(city, interests = [], destId, force = false) {
     }
   }
 
-  // 2. Call Next.js API route → OpenAI on the server
-  const res = await fetch('/api/research', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ city, interests }),
-  });
+  // 2. Call Next.js API route → OpenAI on the server (90s timeout)
+  const controller = new AbortController();
+  const timeoutId  = setTimeout(() => controller.abort(), 90_000);
+
+  let res;
+  try {
+    res = await fetch('/api/research', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ city, interests }),
+      signal:  controller.signal,
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Research timed out after 90 seconds. Please try again.');
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

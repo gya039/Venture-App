@@ -198,7 +198,7 @@ export default function TripDetailPage() {
         </h1>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '4px' }}>
           <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>{dateRange}</span>
-          <CountdownBadge startDate={firstDest?.startDate} />
+          <CountdownBadge date={firstDest?.startDate} />
         </div>
 
         {/* ── Destination tabs (multi-city) ──────────────────────────────── */}
