@@ -47,18 +47,28 @@ export default function MapView({ spots = [], centerLat, centerLng, onSpotClick,
       map.addControl(new mapboxgl.AttributionControl({ compact: true }),    'bottom-right');
 
       map.on('load', () => {
-        // Force Mapbox to recalculate its size after CSS flex has settled.
-        // Without this, the map thinks it's 0×0 and all markers land at the
-        // top-left corner until the first user interaction triggers a resize.
-        map.resize();
         mapRef.current = map;
-        setReady(true);
+        // Double rAF: first lets the browser finish the flex layout pass,
+        // second lets Mapbox's own rAF queue drain before we place markers.
+        // Without this, the map canvas can report 0×0 and all markers
+        // land at top-left until the user triggers a zoom/pan.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            map.resize();
+            setReady(true);
+          });
+        });
       });
 
-      // Keep map size in sync whenever the flex container resizes
-      // (e.g. sidebar collapse, filter panel expanding, window resize)
+      // Debounced ResizeObserver — avoids calling resize() during transient
+      // flex-layout changes (hover state, filter chips expanding, etc.)
+      // that would snap all markers back to top-left mid-render.
       if (containerRef.current && typeof ResizeObserver !== 'undefined') {
-        resizeObs = new ResizeObserver(() => { mapRef.current?.resize(); });
+        let resizeTimer;
+        resizeObs = new ResizeObserver(() => {
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => { mapRef.current?.resize(); }, 50);
+        });
         resizeObs.observe(containerRef.current);
       }
     }).catch(() => setMapErr('load-failed'));
@@ -175,9 +185,14 @@ export default function MapView({ spots = [], centerLat, centerLng, onSpotClick,
     );
   }
 
+  // Both wrapper and container use position:absolute inset:0.
+  // This fills the nearest positioned ancestor (the flex panel with
+  // position:relative in the trips page) without relying on CSS height
+  // inheritance through flex children — which is the source of the
+  // "markers snap to top-left on hover" glitch.
   return (
-    <div style={{ position:'relative', width:'100%', height:'100%' }}>
-      <div ref={containerRef} style={{ width:'100%', height:'100%' }} />
+    <div style={{ position:'absolute', inset:0 }}>
+      <div ref={containerRef} style={{ position:'absolute', inset:0 }} />
       {!ready && (
         <div style={{ position:'absolute', inset:0, background:'#0a0a0a', display:'flex', alignItems:'center', justifyContent:'center' }}>
           <div style={{ width:28, height:28, borderRadius:'50%', border:'2px solid #222', borderTopColor:'#f59e0b', animation:'spin 0.8s linear infinite' }} />

@@ -12,8 +12,9 @@
       "collectionGroup": "destinations",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "tripId",     "order": "ASCENDING" },
-        { "fieldPath": "sortOrder",  "order": "ASCENDING" }
+        { "fieldPath": "tripId",    "order": "ASCENDING" },
+        { "fieldPath": "userId",    "order": "ASCENDING" },
+        { "fieldPath": "sortOrder", "order": "ASCENDING" }
       ]
     },
     {
@@ -21,6 +22,7 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "destinationId", "order": "ASCENDING" },
+        { "fieldPath": "userId",        "order": "ASCENDING" },
         { "fieldPath": "dayNumber",     "order": "ASCENDING" }
       ]
     },
