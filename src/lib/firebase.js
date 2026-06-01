@@ -4,7 +4,12 @@
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  getFirestore,
+} from 'firebase/firestore';
 
 const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY;
 
@@ -24,5 +29,23 @@ const app = apiKey
   : null;
 
 export const auth = app ? getAuth(app) : null;
-export const db   = app ? getFirestore(app) : null;
+
+// Enable offline persistence via IndexedDB so the last-read research data
+// (citySpots, trips, destinations, dayPlans) is available without a connection.
+// initializeFirestore must be called once before getFirestore.
+export const db = app
+  ? (() => {
+      try {
+        return initializeFirestore(app, {
+          localCache: persistentLocalCache({
+            tabManager: persistentMultipleTabManager(),
+          }),
+        });
+      } catch {
+        // Already initialised (e.g. hot-reload) — fall back to getFirestore
+        return getFirestore(app);
+      }
+    })()
+  : null;
+
 export default app;

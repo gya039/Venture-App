@@ -143,6 +143,22 @@ export const CITY_PASSES = {
     link: 'https://www.budapestcard.com',
   },
 
+  // ── Porto ──────────────────────────────────────────────────────────────
+  Porto: {
+    name: 'Porto Card',
+    emoji: '🇵🇹',
+    tiers: [
+      { days: 1, price: 13, label: '1 day' },
+      { days: 2, price: 20, label: '2 days' },
+      { days: 3, price: 26, label: '3 days' },
+      { days: 4, price: 33, label: '4 days' },
+    ],
+    includesTransport: true,
+    transportValue: 7,
+    coverageNote: 'Free entry to 6 museums + unlimited metro & bus',
+    link: 'https://www.portocard.pt',
+  },
+
   // ── Copenhagen ─────────────────────────────────────────────────────────
   Copenhagen: {
     name: 'Copenhagen Card',

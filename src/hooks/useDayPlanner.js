@@ -38,13 +38,15 @@ export function useDayPlanner(destId, city) {
       // 3. Day plan spots for each plan
       const assembled = await Promise.all(plans.map(async (plan) => {
         const dpSpots = await getDayPlanSpots(plan.id);
-        const spots   = dpSpots
+        const spots = dpSpots
           .map(dps => {
             const spot = spotMap[dps.spotId];
             if (!spot) return null;
             return { ...spot, dayPlanSpotId: dps.id, timeOfDay: dps.timeOfDay, sortOrder: dps.sortOrder };
           })
           .filter(Boolean)
+          // Safety net: deduplicate by dayPlanSpotId in case Firestore has stale duplicates
+          .filter((sp, idx, arr) => arr.findIndex(x => x.dayPlanSpotId === sp.dayPlanSpotId) === idx)
           .sort((a, b) => {
             const order = { morning: 0, afternoon: 1, evening: 2 };
             return (order[a.timeOfDay] ?? 3) - (order[b.timeOfDay] ?? 3) || a.sortOrder - b.sortOrder;

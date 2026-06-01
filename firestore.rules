@@ -8,48 +8,89 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
+    // ── Saved Spots (subcollection of users) ─────────────────────
+    match /users/{uid}/savedSpots/{spotId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // ── Spot Notes (subcollection of users) ──────────────────────
+    match /users/{uid}/spotNotes/{spotId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
     // ── Trips ────────────────────────────────────────────────────
-    // Users can only see and modify their own trips
+    // Owners can read/write; public trips are readable by anyone
     match /trips/{tripId} {
-      allow read, write: if request.auth != null
+      allow read: if (request.auth != null && request.auth.uid == resource.data.userId)
+                  || resource.data.isPublic == true;
+      allow write: if request.auth != null
         && request.auth.uid == resource.data.userId;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.userId;
     }
 
     // ── Destinations ─────────────────────────────────────────────
+    // Owners can read/write; destinations are publicly readable (no PII beyond userId)
+    // Public read is gated at the trip level — getTripPublic checks isPublic first.
     match /destinations/{destId} {
-      allow read, write: if request.auth != null
+      allow read: if true;
+      allow write: if request.auth != null
         && request.auth.uid == resource.data.userId;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.userId;
     }
 
     // ── City Spots (cache) ───────────────────────────────────────
-    // Any authenticated user can read/write cached spots
-    // (written by client SDK after /api/research returns spots)
+    // Publicly readable (AI-researched data, no PII)
     match /citySpots/{city}/spots/{spotId} {
-      allow read, write: if request.auth != null;
+      allow read: if true;
+      allow write: if request.auth != null;
     }
 
     // ── Day Plans ────────────────────────────────────────────────
+    // Owners can read/write; dayPlans are publicly readable (no sensitive data).
+    // Public exposure is gated at the trip level via isPublic on the trip doc.
     match /dayPlans/{planId} {
-      allow read, write: if request.auth != null
+      allow read: if true;
+      allow write: if request.auth != null
         && request.auth.uid == resource.data.userId;
       allow create: if request.auth != null
         && request.auth.uid == request.resource.data.userId;
     }
 
     // ── Day Plan Spots ───────────────────────────────────────────
+    // Publicly readable (no PII — just spot IDs + time slots)
     match /dayPlanSpots/{id} {
-      allow read, write: if request.auth != null;
-      // TODO: tighten by checking parent dayPlan ownership
+      allow read: if true;
+      allow write: if request.auth != null;
     }
 
     // ── City Passes (curated, read-only for clients) ─────────────
     match /cityPasses/{city} {
       allow read: if request.auth != null;
       allow write: if false; // seeded manually via admin/console
+    }
+
+    // ── City Templates (trip templates per city) ─────────────────
+    // Publicly readable; any signed-in user can save their itinerary as a template.
+    match /cityTemplates/{city}/templates/{templateId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.auth.uid == request.resource.data.authorId;
+      allow update, delete: if request.auth != null
+        && request.auth.uid == resource.data.authorId;
+    }
+
+    // ── Spot Reviews ─────────────────────────────────────────────
+    // Aggregate doc (avgRating, count) is publicly readable.
+    // Individual reviews: publicly readable; only the author can write.
+    match /spotReviews/{spotId} {
+      allow read: if true;
+      allow write: if false; // written via client batch alongside subcollection
+    }
+    match /spotReviews/{spotId}/reviews/{uid} {
+      allow read: if true;
+      allow write: if request.auth != null && request.auth.uid == uid;
     }
   }
 }

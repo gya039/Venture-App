@@ -21,6 +21,9 @@ export default function MapPage() {
   const { id: tripId }   = useParams();
   const [selectedSpot,   setSelectedSpot]   = useState(null);
   const [filterInterest, setFilterInterest] = useState('');
+  const [minScore,       setMinScore]       = useState(1);
+  const [skipTourist,    setSkipTourist]    = useState(false);
+  const effectiveMin = skipTourist ? Math.max(minScore, 3) : minScore;
 
   // TODO: in a full implementation, load the trip first to pick the destination.
   // For now we read destId from the URL query (passed when navigating from Trip Detail).
@@ -32,6 +35,7 @@ export default function MapPage() {
   const { spots, loading } = useDestination(destId || null);
 
   const handleSpotClick = useCallback((spot) => setSelectedSpot(spot), []);
+  const handleDismiss   = useCallback(() => setSelectedSpot(null), []);
 
   const presentInterests = INTERESTS.filter(i => spots.some(s => (s.interests ?? []).includes(i.id)));
 
@@ -94,6 +98,46 @@ export default function MapPage() {
               <span>{i.icon}</span><span>{i.label}</span>
             </button>
           ))}
+          {/* Min score quick filters */}
+          <div style={{ width: 1, background: '#333', flexShrink: 0, margin: '0 2px' }} />
+          {[
+            { label: 'Any', val: 1 },
+            { label: '5+',  val: 5 },
+            { label: '7+',  val: 7 },
+            { label: '9+',  val: 9 },
+          ].map(({ label, val }) => (
+            <button
+              key={val}
+              onClick={() => setMinScore(val)}
+              style={{
+                padding:      '5px 10px',
+                borderRadius: '20px',
+                border:       `1px solid ${minScore === val ? '#f59e0b' : '#222'}`,
+                background:   minScore === val ? 'rgba(245,158,11,0.12)' : 'rgba(20,20,20,0.9)',
+                color:        minScore === val ? '#f59e0b' : '#555',
+                fontSize:     '0.72rem',
+                fontWeight:   minScore === val ? 600 : 400,
+                cursor:       'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+              }}
+            >
+              ✦{label}
+            </button>
+          ))}
+          {/* Skip Tourist Trail toggle */}
+          <div style={{ width: 1, background: '#333', flexShrink: 0, margin: '0 2px' }} />
+          <button
+            onClick={() => setSkipTourist((v) => !v)}
+            style={{
+              padding: '5px 12px', borderRadius: '20px',
+              border:  `1px solid ${skipTourist ? '#f59e0b' : '#222'}`,
+              background: skipTourist ? 'rgba(245,158,11,0.12)' : 'rgba(20,20,20,0.9)',
+              color: skipTourist ? '#f59e0b' : '#555',
+              fontSize: '0.72rem', fontWeight: skipTourist ? 600 : 400,
+              cursor: 'pointer', whiteSpace: 'nowrap', flexShrink: 0,
+            }}
+          >
+            🚫 Tourist Trail
+          </button>
         </div>
       )}
 
@@ -105,6 +149,8 @@ export default function MapPage() {
           centerLng={centre?.lng}
           onSpotClick={handleSpotClick}
           filterInterest={filterInterest}
+          minScore={effectiveMin}
+          focusSpotId={selectedSpot?.id ?? null}
         />
 
         {/* Spot count badge */}
@@ -118,9 +164,15 @@ export default function MapPage() {
             padding: '5px 10px',
             fontSize: '0.72rem', color: '#777',
           }}>
-            {filterInterest
-              ? `${spots.filter(s => (s.interests??[]).includes(filterInterest)).length} spots`
-              : `${spots.length} spots`}
+            {(() => {
+              const n = spots.filter(s => {
+                const score = s.hiddennessScore ?? 1;
+                if (score < effectiveMin) return false;
+                if (filterInterest && !(s.interests ?? []).includes(filterInterest)) return false;
+                return true;
+              }).length;
+              return `${n} spot${n !== 1 ? 's' : ''}`;
+            })()}
           </div>
         )}
       </div>

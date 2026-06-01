@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import HiddennessDots from './HiddennessDots';
+import { flagEmoji } from '@/utils/flagEmoji';
 
 /* ── Data ─────────────────────────────────────────────────────────────────── */
 const STATS = [
@@ -86,10 +87,6 @@ const TESTIMONIALS = [
   },
 ];
 
-function flagEmoji(code) {
-  if (!code || code.length !== 2) return '🌍';
-  return [...code.toUpperCase()].map(c => String.fromCodePoint(0x1F1E6 - 65 + c.charCodeAt(0))).join('');
-}
 
 /* ── Particle canvas ──────────────────────────────────────────────────────── */
 function ParticleField() {
@@ -207,11 +204,6 @@ export default function LandingPage() {
           <span style={{ fontWeight: 700, fontSize: '1rem', letterSpacing: '-0.02em', color: 'var(--text-primary)' }}>Venture</span>
         </Link>
 
-        {/* Center */}
-        <Link href="/explore" style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', fontWeight: 500, display: 'none' }}>
-          Explore cities
-        </Link>
-
         {/* Right */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Link href="/auth" style={{
@@ -234,7 +226,7 @@ export default function LandingPage() {
       </nav>
 
       {/* ══════════════════ 2. HERO ══════════════════ */}
-      <section style={{
+      <section className="lp-hero-section" style={{
         minHeight: 'calc(100dvh - 64px)',
         display: 'flex', alignItems: 'center',
         padding: '60px 40px',
@@ -243,7 +235,7 @@ export default function LandingPage() {
       }}>
         <ParticleField />
 
-        <div style={{
+        <div className="lp-hero-inner" style={{
           maxWidth: 1120, margin: '0 auto', width: '100%',
           display: 'flex', alignItems: 'center', gap: 80,
           position: 'relative', zIndex: 1,
@@ -298,7 +290,7 @@ export default function LandingPage() {
           </div>
 
           {/* Right: animated spot card mockups */}
-          <div style={{
+          <div className="lp-hero-cards" style={{
             flexShrink: 0, position: 'relative', width: 300, height: 380,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
@@ -331,7 +323,7 @@ export default function LandingPage() {
         <div style={{
           maxWidth: 1120, margin: '0 auto',
           display: 'grid', gridTemplateColumns: 'repeat(4,1fr)',
-        }}>
+        }} className="lp-stats-grid">
           {STATS.map((s, i) => (
             <div key={s.label} style={{
               padding: '32px 24px', textAlign: 'center',
@@ -345,16 +337,16 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 4. HOW IT WORKS ══════════════════ */}
-      <section id="how" style={{ padding: '96px 40px' }}>
+      <section id="how" className="lp-section" style={{ padding: '96px 40px' }}>
         <div style={{ maxWidth: 1120, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 64 }}>
             <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>HOW IT WORKS</p>
             <h2 style={{ fontSize: 'clamp(1.8rem,3.5vw,2.4rem)', fontWeight: 800, letterSpacing: '-0.03em' }}>Three steps to hidden gems</h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 40, position: 'relative' }}>
+          <div className="lp-how-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 40, position: 'relative' }}>
             {/* Connecting line */}
-            <div style={{
+            <div className="lp-how-line" style={{
               position: 'absolute', top: 36, left: 'calc(16.66% + 20px)', right: 'calc(16.66% + 20px)',
               height: 1, background: 'linear-gradient(90deg, var(--border), rgba(245,158,11,0.3), var(--border))',
               zIndex: 0,
@@ -382,7 +374,7 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 5. FEATURED DESTINATIONS ══════════════════ */}
-      <section style={{
+      <section className="lp-section" style={{
         padding: '96px 40px',
         background: 'var(--surface)',
         borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)',
@@ -394,7 +386,7 @@ export default function LandingPage() {
             <p style={{ color: 'var(--text-secondary)', marginTop: 12, fontSize: '0.9rem' }}>Works for any city worldwide — these are just the ones we love most.</p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
+          <div className="lp-city-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
             {FEATURED.map((c) => (
               <Link
                 key={c.city}
@@ -466,14 +458,14 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 6. HIDDENNESS EXPLAINER ══════════════════ */}
-      <section style={{ padding: '96px 40px' }}>
+      <section className="lp-section" style={{ padding: '96px 40px' }}>
         <div style={{ maxWidth: 1120, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 64 }}>
             <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>THE DIFFERENCE</p>
             <h2 style={{ fontSize: 'clamp(1.8rem,3.5vw,2.4rem)', fontWeight: 800, letterSpacing: '-0.03em' }}>Not another tourist list</h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 32, alignItems: 'start' }}>
+          <div className="lp-diff-grid" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 32, alignItems: 'start' }}>
             {/* Left: tourist */}
             <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 20, padding: 28, opacity: 0.7 }}>
               <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-muted)', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 20 }}>🗺️ What every travel app shows</p>
@@ -496,7 +488,7 @@ export default function LandingPage() {
             </div>
 
             {/* VS divider */}
-            <div style={{
+            <div className="lp-diff-vs" style={{
               width: 48, height: 48, borderRadius: '50%',
               background: 'var(--surface)', border: '1px solid var(--border)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -526,7 +518,7 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 7. TESTIMONIALS ══════════════════ */}
-      <section style={{
+      <section className="lp-section" style={{
         padding: '96px 40px',
         background: 'var(--surface)',
         borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)',
@@ -537,7 +529,7 @@ export default function LandingPage() {
             <h2 style={{ fontSize: 'clamp(1.8rem,3.5vw,2.4rem)', fontWeight: 800, letterSpacing: '-0.03em' }}>Built for curious travellers</h2>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 24 }}>
+          <div className="lp-testimonials-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 24 }}>
             {TESTIMONIALS.map((t, i) => (
               <div key={t.name} style={{
                 background: 'var(--card)', border: '1px solid var(--border)',
@@ -566,7 +558,7 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 8. FINAL CTA ══════════════════ */}
-      <section style={{
+      <section className="lp-section" style={{
         padding: '112px 40px',
         textAlign: 'center',
         background: 'linear-gradient(180deg, transparent 0%, rgba(245,158,11,0.04) 50%, transparent 100%)',
@@ -607,7 +599,7 @@ export default function LandingPage() {
       </section>
 
       {/* ══════════════════ 9. FOOTER ══════════════════ */}
-      <footer style={{
+      <footer className="lp-footer" style={{
         borderTop: '1px solid var(--border)',
         padding: '32px 40px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 16,

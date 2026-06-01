@@ -9,6 +9,10 @@ export const INTERESTS = [
   { id: 'monuments',   label: 'Monuments & Landmarks',   icon: '🏰' },
   { id: 'photography', label: 'Photography Spots',       icon: '📸' },
   { id: 'relaxation',  label: 'Relaxation & Spas',       icon: '💆' },
+  { id: 'music',       label: 'Music & Venues',          icon: '🎵' },
+  { id: 'streets',     label: 'Streets & Neighbourhoods', icon: '🚶' },
+  { id: 'offbeat',     label: 'Offbeat & Unusual',       icon: '🔍' },
+  { id: 'outdoor',     label: 'Outdoor & Nature',        icon: '🌿' },
 ];
 
 export const INTEREST_IDS = INTERESTS.map((i) => i.id);

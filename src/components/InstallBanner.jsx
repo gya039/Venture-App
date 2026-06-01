@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { track } from '@/lib/analytics';
 
 /**
  * InstallBanner — shows an "Add to Home Screen" prompt on supported browsers.
@@ -18,29 +19,42 @@ export default function InstallBanner() {
   const [isIOS,       setIsIOS]       = useState(false);
   const [iosDismissed,setIosDismissed]= useState(true); // default hidden
 
+  // Capture the deferred install prompt as soon as the browser fires it
+  // (fires before or after the user creates a trip — we hold it and show later)
   useEffect(() => {
-    // Already installed as PWA
     if (window.matchMedia('(display-mode: standalone)').matches) return;
-    // User dismissed before
-    if (localStorage.getItem('pwa-banner-dismissed')) return;
-
-    // iOS Safari — no beforeinstallprompt, show manual instructions
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !('MSStream' in window);
-    if (ios) {
-      setIsIOS(true);
-      setIosDismissed(false);
-      return;
-    }
-
-    // Chrome / Edge Android
     const handler = (e) => {
       e.preventDefault();
       setPrompt(e);
-      setVisible(true);
     };
     window.addEventListener('beforeinstallprompt', handler);
     return () => window.removeEventListener('beforeinstallprompt', handler);
   }, []);
+
+  // Show the banner only after the user has created their first trip
+  useEffect(() => {
+    if (window.matchMedia('(display-mode: standalone)').matches) return;
+    if (localStorage.getItem('pwa-banner-dismissed')) return;
+
+    function check() {
+      if (!localStorage.getItem('hasCreatedTrip')) return;
+
+      const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) && !('MSStream' in window);
+      if (ios) {
+        setIsIOS(true);
+        setIosDismissed(false);
+      } else if (prompt) {
+        setVisible(true);
+      }
+    }
+
+    check();
+
+    // Re-check when trip creation fires a storage event (same-tab workaround)
+    const onTripCreated = () => check();
+    window.addEventListener('venture:tripCreated', onTripCreated);
+    return () => window.removeEventListener('venture:tripCreated', onTripCreated);
+  }, [prompt]); // re-run when deferred prompt is captured
 
   const dismiss = () => {
     localStorage.setItem('pwa-banner-dismissed', '1');
@@ -55,6 +69,7 @@ export default function InstallBanner() {
     const { outcome } = await prompt.userChoice;
     if (outcome === 'accepted') {
       localStorage.setItem('pwa-banner-dismissed', '1');
+      track('install_prompt_accepted');
     }
     setVisible(false);
     setInstalling(false);

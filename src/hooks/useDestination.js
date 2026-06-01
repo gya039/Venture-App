@@ -29,7 +29,14 @@ export function useDestination(destinationId) {
     }
   };
 
-  useEffect(() => { fetchData(); }, [destinationId]); // eslint-disable-line
+  useEffect(() => {
+    // Clear stale data from previous destination immediately so the map
+    // doesn't briefly show old city markers while the new city loads.
+    setSpots([]);
+    setDestination(null);
+    setError(null);
+    fetchData();
+  }, [destinationId]); // eslint-disable-line
 
   return { destination, spots, loading, error, refetch: fetchData };
 }

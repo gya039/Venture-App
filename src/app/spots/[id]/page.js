@@ -205,6 +205,135 @@ export default function SpotDetailPage() {
           </div>
         )}
 
+        {/* ── Closure status ──────────────────────────────────────────────── */}
+        {spot.closureStatus && spot.closureStatus !== 'open' && (
+          <a
+            href={`https://www.google.com/search?q=${encodeURIComponent((spot.name ?? '') + ' ' + (spot.city ?? city) + ' opening hours')}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display:        'block',
+              background:     spot.closureStatus === 'permanently_closed' ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)',
+              border:         `1px solid ${spot.closureStatus === 'permanently_closed' ? 'rgba(239,68,68,0.25)' : 'rgba(245,158,11,0.25)'}`,
+              borderRadius:   10,
+              padding:        '12px 16px',
+              marginBottom:   20,
+              textDecoration: 'none',
+            }}
+          >
+            <p style={{ fontSize: '0.85rem', fontWeight: 700, color: spot.closureStatus === 'permanently_closed' ? '#ef4444' : '#f59e0b', marginBottom: 4 }}>
+              {spot.closureStatus === 'temporarily_closed' && '⚠️ May be temporarily closed'}
+              {spot.closureStatus === 'permanently_closed' && '✕ This place has permanently closed'}
+              {spot.closureStatus === 'seasonal'           && '🗓 Seasonal opening'}
+            </p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              AI research may be out of date — tap to check current status on Google →
+            </p>
+          </a>
+        )}
+
+        {/* ── Opening hours ────────────────────────────────────────────────── */}
+        {spot.openingHours && (
+          <div style={{ marginBottom: 20 }}>
+            <p style={{
+              fontSize:      '0.72rem',
+              fontWeight:    600,
+              color:         'var(--text-muted)',
+              textTransform: 'uppercase',
+              letterSpacing: '0.07em',
+              marginBottom:  10,
+            }}>
+              Opening Hours
+            </p>
+            {typeof spot.openingHours === 'object' ? (
+              <div style={{
+                background:   'var(--card)',
+                border:       '1px solid var(--border)',
+                borderRadius: 10,
+                overflow:     'hidden',
+              }}>
+                {['mon','tue','wed','thu','fri','sat','sun'].map((key) => {
+                  const NAMES   = { mon:'Monday', tue:'Tuesday', wed:'Wednesday', thu:'Thursday', fri:'Friday', sat:'Saturday', sun:'Sunday' };
+                  const TODAY   = ['sun','mon','tue','wed','thu','fri','sat'][new Date().getDay()];
+                  const val     = spot.openingHours[key];
+                  const isToday = key === TODAY;
+                  const isClosed = !val || val.toLowerCase() === 'closed';
+
+                  // Format "09:00-18:00" → "9am – 6pm"
+                  let display = 'Closed';
+                  if (!isClosed) {
+                    const [open, close] = val.split('-');
+                    const fmt = (s) => {
+                      const [h, m] = (s || '').split(':').map(Number);
+                      if (isNaN(h)) return s;
+                      const suf  = h >= 12 ? 'pm' : 'am';
+                      const hour = h % 12 || 12;
+                      return m ? `${hour}:${String(m).padStart(2,'0')}${suf}` : `${hour}${suf}`;
+                    };
+                    display = `${fmt(open)} – ${fmt(close)}`;
+                  }
+
+                  return (
+                    <div key={key} style={{
+                      display:        'flex',
+                      justifyContent: 'space-between',
+                      alignItems:     'center',
+                      padding:        '9px 14px',
+                      background:     isToday ? 'rgba(245,158,11,0.07)' : 'transparent',
+                      borderLeft:     `3px solid ${isToday ? 'var(--accent)' : 'transparent'}`,
+                      borderBottom:   key !== 'sun' ? '1px solid var(--border)' : 'none',
+                    }}>
+                      <span style={{
+                        fontSize:   '0.82rem',
+                        fontWeight: isToday ? 700 : 400,
+                        color:      isToday ? 'var(--text-primary)' : 'var(--text-secondary)',
+                        display:    'flex',
+                        alignItems: 'center',
+                        gap:        6,
+                      }}>
+                        {NAMES[key]}
+                        {isToday && (
+                          <span style={{ fontSize: '0.65rem', background: 'var(--accent)', color: '#000', borderRadius: 4, padding: '1px 5px', fontWeight: 700 }}>
+                            TODAY
+                          </span>
+                        )}
+                      </span>
+                      <span style={{
+                        fontSize:   '0.82rem',
+                        fontWeight: isToday ? 600 : 400,
+                        color:      isClosed ? '#ef4444' : (isToday ? 'var(--text-primary)' : 'var(--text-muted)'),
+                      }}>
+                        {display}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                ⏰ {spot.openingHours}
+              </p>
+            )}
+            {/* Always-visible hours disclaimer */}
+            <a
+              href={`https://www.google.com/search?q=${encodeURIComponent((spot.name ?? '') + ' ' + (spot.city ?? city) + ' opening hours')}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{
+                display:        'inline-flex',
+                alignItems:     'center',
+                gap:            4,
+                marginTop:      6,
+                fontSize:       '0.72rem',
+                color:          'var(--text-muted)',
+                textDecoration: 'none',
+              }}
+            >
+              🔗 AI-sourced · Verify current hours before visiting
+            </a>
+          </div>
+        )}
+
         {/* ── Meta row ────────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '20px' }}>
           {spot.address && (

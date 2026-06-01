@@ -1,0 +1,1031 @@
+'use client';
+
+/**
+ * DaysBuilder — two-panel itinerary planner.
+ *
+ * Left panel  (300px): spot picker — starred / all toggle, search, draggable cards
+ * Right panel (flex):  collapsible day sections with Morning / Afternoon / Evening drop zones
+ *
+ * DnD architecture: single DndContext owns everything so cross-day drag works.
+ *   Picker items  → drag ID:  pick__<spotId>
+ *   Placed items  → drag ID:  <dayPlanSpotId>   (Firestore doc ID)
+ *   Drop zones    → zone ID:  zone__<dayId>__<slot>
+ */
+
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  KeyboardSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  useDroppable,
+  useDraggable,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { getHiddennessLevel } from '@/constants/hiddenness';
+import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
+import {
+  addSpotToDayPlan,
+  removeDayPlanSpot,
+  updateDayPlanSpotSlot,
+  saveTripAsTemplate,
+} from '@/lib/db';
+import { travelChip, haversineKm, fmtKm } from '@/lib/travelTime';
+import { exportItineraryPDF } from '@/lib/pdfExport';
+import { track } from '@/lib/analytics';
+
+/* ── Constants ────────────────────────────────────────────────────────────── */
+const SLOTS      = ['morning', 'afternoon', 'evening'];
+const SLOT_LABEL = { morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening' };
+const SLOT_COLOR = { morning: '#f59e0b', afternoon: '#fb923c', evening: '#b45309' };
+
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+function initSlots(days) {
+  const result = {};
+  days.forEach(day => {
+    const grouped = { morning: [], afternoon: [], evening: [] };
+    const seen = new Set(); // deduplicate by dayPlanSpotId as a render-side safety net
+    (day.spots ?? []).forEach(spot => {
+      if (seen.has(spot.dayPlanSpotId)) return;
+      seen.add(spot.dayPlanSpotId);
+      const slot = SLOTS.includes(spot.timeOfDay) ? spot.timeOfDay : 'morning';
+      grouped[slot].push(spot);
+    });
+    result[day.id] = grouped;
+  });
+  return result;
+}
+
+function fmtDayLabel(iso) {
+  if (!iso) return '';
+  return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', {
+    weekday: 'short', day: 'numeric', month: 'short',
+  });
+}
+
+function fmtDuration(mins) {
+  if (!mins) return null;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  if (h > 0) return `${h}h${m > 0 ? `${m}m` : ''}`;
+  return `${m}m`;
+}
+
+/* ── GripIcon ──────────────────────────────────────────────────────────────── */
+function GripIcon() {
+  return (
+    <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor" opacity="0.5">
+      <circle cx="2.5" cy="2"  r="1.5" />
+      <circle cx="7.5" cy="2"  r="1.5" />
+      <circle cx="2.5" cy="7"  r="1.5" />
+      <circle cx="7.5" cy="7"  r="1.5" />
+      <circle cx="2.5" cy="12" r="1.5" />
+      <circle cx="7.5" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+/* ── PickerSpot (draggable picker card) ────────────────────────────────────── */
+function PickerSpot({ spot, isAdded, onAdd }) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: `pick__${spot.id}`,
+    data: { type: 'picker', spot },
+  });
+  const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 9,
+        padding: '10px 10px 10px 8px', borderRadius: 9, marginBottom: 5,
+        border: `1px solid ${isAdded ? 'var(--line)' : level.color + '30'}`,
+        background: 'var(--card)',
+        opacity: isDragging ? 0.3 : isAdded ? 0.5 : 1,
+        userSelect: 'none', transition: 'opacity 0.15s',
+        '--sc': `var(${level.cssVar})`,
+      }}
+    >
+      {/* Drag grip — more visible */}
+      <div
+        {...listeners}
+        style={{ flexShrink: 0, paddingTop: 2, color: 'var(--muted)', cursor: 'grab', touchAction: 'none', opacity: 0.65 }}
+      >
+        <GripIcon />
+      </div>
+
+      {/* Score badge — coloured circle matching Research tab */}
+      <span style={{
+        flexShrink: 0, width: 24, height: 24, borderRadius: '50%',
+        background: level.color, color: '#000',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: '0.62rem', fontWeight: 700, marginTop: 1,
+        boxShadow: `0 0 6px ${level.color}55`,
+      }}>
+        {spot.hiddennessScore ?? 1}
+      </span>
+
+      {/* Text block */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Category — small caps above name */}
+        {spot.category && (
+          <div style={{ fontSize: '0.62rem', fontWeight: 700, color: level.color, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 2, lineHeight: 1 }}>
+            {spot.category}
+          </div>
+        )}
+        {/* Name — two-line clamp */}
+        <div style={{
+          fontSize: '0.82rem', fontWeight: 600, lineHeight: 1.3,
+          color: isAdded ? 'var(--muted)' : 'var(--ink)',
+          display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        }}>
+          {isAdded && <span style={{ color: level.color }}>✓ </span>}{spot.name}
+        </div>
+      </div>
+
+      {/* Quick-add button */}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); onAdd(spot); }}
+        style={{
+          flexShrink: 0, width: 22, height: 22, borderRadius: '50%',
+          border: isAdded ? '1px solid var(--line)' : 'none',
+          background: isAdded ? 'transparent' : 'var(--accent)',
+          color: isAdded ? 'var(--muted)' : '#000',
+          fontSize: '0.75rem', fontWeight: 700, cursor: isAdded ? 'default' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+          marginTop: 1,
+        }}
+        title={isAdded ? 'Already in plan' : 'Add to Day 1'}
+      >
+        {isAdded ? '✓' : '+'}
+      </button>
+    </div>
+  );
+}
+
+/* ── PickerSpotOverlay (drag ghost for picker) ────────────────────────────── */
+function PickerSpotOverlay({ spot }) {
+  const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+      borderRadius: 8, border: `1px solid ${level.color}60`,
+      background: 'var(--card)', boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+      maxWidth: 260, userSelect: 'none',
+    }}>
+      <span style={{ flexShrink: 0, width: 20, height: 20, borderRadius: '50%', background: level.color, color: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.58rem', fontWeight: 700 }}>
+        {spot.hiddennessScore ?? 1}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{spot.name}</div>
+        <div style={{ fontSize: '0.66rem', color: 'var(--muted)' }}>{spot.category}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── PlacedSpotCard (sortable placed card inside a slot) ──────────────────── */
+function PlacedSpotCard({ spot, onRemove }) {
+  const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+  const {
+    attributes, listeners, setNodeRef,
+    transform, transition, isDragging,
+  } = useSortable({ id: spot.dayPlanSpotId, data: { type: 'placed', spot } });
+
+  const todayHrs  = getTodayHours(spot.openingHours);
+  const isClosed  = todayHrs === 'Closed';
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.2 : 1, marginBottom: 6 }}
+    >
+      <div style={{
+        display: 'flex', alignItems: 'flex-start', gap: 8, padding: '10px 10px',
+        borderRadius: 8, border: `1px solid ${level.color}28`,
+        background: 'var(--card)',
+        boxShadow: isDragging ? '0 8px 28px rgba(0,0,0,0.45)' : 'none',
+      }}>
+        {/* Grip */}
+        <div
+          {...attributes} {...listeners}
+          style={{ flexShrink: 0, paddingTop: 3, color: 'var(--muted)', cursor: 'grab', touchAction: 'none', lineHeight: 0 }}
+        >
+          <GripIcon />
+        </div>
+
+        {/* Score */}
+        <span style={{
+          flexShrink: 0, width: 22, height: 22, borderRadius: '50%',
+          background: level.color, color: '#000', marginTop: 1,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '0.62rem', fontWeight: 700,
+        }}>
+          {spot.hiddennessScore ?? 1}
+        </span>
+
+        {/* Content */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ink)', lineHeight: 1.3 }}>
+            {spot.name}
+          </div>
+          <div style={{ fontSize: '0.7rem', color: level.color, fontWeight: 500, marginTop: 2 }}>
+            {[spot.category, spot.neighbourhood].filter(Boolean).join(' · ')}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+            {spot.visitDurationMinutes ? (
+              <span style={{ fontSize: '0.67rem', color: 'var(--muted)' }}>⏱ {fmtDuration(spot.visitDurationMinutes)}</span>
+            ) : null}
+            {spot.entryPrice != null ? (
+              <span style={{ fontSize: '0.67rem', color: spot.entryPrice === 0 ? 'var(--teal, #22c55e)' : 'var(--muted)' }}>
+                {spot.entryPrice === 0 ? 'Free' : `€${spot.entryPrice}`}
+              </span>
+            ) : null}
+            {todayHrs ? (
+              <span style={{ fontSize: '0.67rem', color: isClosed ? 'var(--error)' : 'var(--muted)' }}>
+                {isClosed ? getClosureLabel(spot.openingHours) : `Today ${todayHrs}`}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Remove */}
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onRemove(spot.dayPlanSpotId); }}
+          style={{
+            flexShrink: 0, width: 20, height: 20, borderRadius: '50%',
+            border: '1px solid var(--line)', background: 'transparent',
+            color: 'var(--muted)', fontSize: '0.8rem', lineHeight: 1,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--error)'; e.currentTarget.style.color = 'var(--error)'; }}
+          onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--muted)'; }}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── PlacedSpotOverlay (drag ghost for placed cards) ───────────────────────── */
+function PlacedSpotOverlay({ spot }) {
+  const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '10px 10px',
+      borderRadius: 8, border: `1px solid ${level.color}50`,
+      background: 'var(--card)', boxShadow: '0 10px 30px rgba(0,0,0,0.45)',
+      maxWidth: 320, userSelect: 'none',
+    }}>
+      <span style={{ flexShrink: 0, width: 22, height: 22, borderRadius: '50%', background: level.color, color: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700 }}>
+        {spot.hiddennessScore ?? 1}
+      </span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{spot.name}</div>
+        <div style={{ fontSize: '0.7rem', color: level.color, fontWeight: 500 }}>{spot.category}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── TravelChip ────────────────────────────────────────────────────────────── */
+function TravelChip({ spotA, spotB }) {
+  const chip = travelChip(spotA, spotB);
+  if (!chip) return null;
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 5,
+      padding: '2px 4px', marginBottom: 4, marginLeft: 30,
+      fontSize: '0.67rem', color: 'var(--muted)',
+    }}>
+      <span style={{ opacity: 0.7 }}>{chip.mode === 'walk' ? '🚶' : '🚌'}</span>
+      <span>{chip.label}</span>
+    </div>
+  );
+}
+
+/* ── SlotZone (droppable slot section) ────────────────────────────────────── */
+function SlotZone({ slot, dayId, spots, onRemove }) {
+  const zoneId = `zone__${dayId}__${slot}`;
+  const { setNodeRef, isOver } = useDroppable({ id: zoneId });
+  const isEmpty = spots.length === 0;
+
+  return (
+    <div style={{ marginBottom: 14 }}>
+      {/* Slot header — typographic label with coloured left border accent */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, paddingLeft: 8, borderLeft: `2.5px solid ${SLOT_COLOR[slot]}` }}>
+        <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--mono, monospace)' }}>
+          {SLOT_LABEL[slot]}
+        </span>
+        {spots.length > 0 && (
+          <span style={{ fontSize: '0.63rem', color: 'var(--muted)', marginLeft: 'auto', paddingRight: 4 }}>
+            {spots.length} spot{spots.length !== 1 ? 's' : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Drop zone */}
+      <div
+        ref={setNodeRef}
+        style={{
+          minHeight:    isEmpty ? 44 : 'auto',
+          borderRadius: 8,
+          border:       isEmpty
+            ? `1.5px dashed ${isOver ? 'var(--accent)' : 'var(--line)'}`
+            : isOver ? `1.5px dashed var(--accent)` : 'none',
+          background:   isOver ? 'rgba(245,158,11,0.04)' : 'transparent',
+          transition:   'border-color 0.15s, background 0.15s',
+          display:      'flex', flexDirection: 'column',
+          alignItems:   isEmpty ? 'center' : 'stretch',
+          justifyContent: isEmpty ? 'center' : 'flex-start',
+        }}
+      >
+        <SortableContext items={spots.map(s => s.dayPlanSpotId)} strategy={verticalListSortingStrategy}>
+          {spots.map((spot, idx) => (
+            <Fragment key={spot.dayPlanSpotId}>
+              <PlacedSpotCard spot={spot} onRemove={onRemove} />
+              {idx < spots.length - 1 && <TravelChip spotA={spot} spotB={spots[idx + 1]} />}
+            </Fragment>
+          ))}
+        </SortableContext>
+
+        {isEmpty && (
+          <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '0.67rem', color: isOver ? 'var(--accent)' : 'color-mix(in srgb, var(--muted) 55%, transparent)', fontStyle: 'italic' }}>
+              {isOver ? '📌 Drop here' : '+ Drag a spot here'}
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── DaySection (collapsible day card) ────────────────────────────────────── */
+function DaySection({ day, slots, onRemove }) {
+  const [open, setOpen] = useState(true);
+
+  const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
+  const totalSpots    = allSpots.length;
+  const totalCost     = allSpots.reduce((s, sp) => s + (sp.entryPrice ?? 0), 0);
+  const totalDuration = allSpots.reduce((s, sp) => s + (sp.visitDurationMinutes ?? 0), 0);
+
+  let totalDistKm = 0;
+  for (let i = 0; i < allSpots.length - 1; i++) {
+    const a = allSpots[i], b = allSpots[i + 1];
+    if (a.lat && a.lng && b.lat && b.lng && !a.coordsMissing && !b.coordsMissing) {
+      totalDistKm += haversineKm(a.lat, a.lng, b.lat, b.lng);
+    }
+  }
+
+  return (
+    <div style={{ background: 'var(--card)', borderRadius: 12, border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 10 }}>
+      {/* Collapsible header */}
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', background: 'none', border: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 16px', borderBottom: open ? '1px solid var(--border)' : 'none',
+          cursor: 'pointer',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--ink)', lineHeight: 1 }}>
+            Day {day.dayNumber}
+          </span>
+          {day.planDate && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>
+              · {fmtDayLabel(day.planDate)}
+            </span>
+          )}
+          {totalSpots > 0 && (
+            <span style={{ fontSize: '0.63rem', fontWeight: 600, background: 'var(--accent-dim)', color: 'var(--accent)', padding: '2px 7px', borderRadius: 10 }}>
+              {totalSpots}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {totalCost > 0 && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>~€{totalCost}/pp</span>}
+          <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="var(--muted)" strokeWidth={2.5}
+            style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', flexShrink: 0 }}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+
+      {/* Body */}
+      {open && (
+        <div style={{ padding: '14px 14px 10px' }}>
+          {SLOTS.map(slot => (
+            <SlotZone
+              key={slot}
+              slot={slot}
+              dayId={day.id}
+              spots={slots[slot] ?? []}
+              onRemove={onRemove}
+            />
+          ))}
+
+          {/* Day summary footer */}
+          {totalSpots > 0 && (
+            <div style={{
+              marginTop: 8, paddingTop: 8,
+              borderTop: '1px solid var(--border)',
+              display: 'flex', gap: 14, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+                📍 {totalSpots} spot{totalSpots !== 1 ? 's' : ''}
+              </span>
+              {totalDuration > 0 && (
+                <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+                  ⏱ ~{fmtDuration(totalDuration)}
+                </span>
+              )}
+              {totalDistKm > 0.1 && (
+                <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+                  🚶 ~{fmtKm(totalDistKm)}
+                </span>
+              )}
+              {totalCost > 0 && (
+                <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
+                  💶 ~€{totalCost}/pp
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   DaysBuilder — main export
+══════════════════════════════════════════════════════════════════════════════ */
+export default function DaysBuilder({
+  days,
+  daysLoading,
+  spots,
+  savedIds,
+  city,
+  tripId,
+  trip,
+  selectedDest,
+  user,
+  onRefetch,
+  onSwitchToResearch,
+  toast,
+}) {
+  /* ── Slot state (mirrors days prop, optimistically updated by DnD) ───────── */
+  const [allSlots_, setAllSlots_] = useState(() => initSlots(days));
+  const allSlotsRef = useRef(allSlots_);
+  const setAllSlots = useCallback((updater) => {
+    const next = typeof updater === 'function' ? updater(allSlotsRef.current) : updater;
+    allSlotsRef.current = next;
+    setAllSlots_(next);
+  }, []);
+
+  // Re-sync when days prop changes (after refetch)
+  useEffect(() => {
+    const fresh = initSlots(days);
+    allSlotsRef.current = fresh;
+    setAllSlots_(fresh);
+  }, [days]);
+
+  /* ── Spot lookup map ─────────────────────────────────────────────────────── */
+  const spotMap = useMemo(() => Object.fromEntries(spots.map(s => [s.id, s])), [spots]);
+
+  /* ── Spot IDs already placed (for dimming in picker) ────────────────────── */
+  const addedSpotIds = useMemo(() => {
+    const ids = new Set();
+    Object.values(allSlots_).forEach(day => {
+      SLOTS.forEach(slot => { (day[slot] ?? []).forEach(s => ids.add(s.id)); });
+    });
+    return ids;
+  }, [allSlots_]);
+
+  /* ── Picker state ────────────────────────────────────────────────────────── */
+  const [pickerMode,       setPickerMode]       = useState('starred'); // 'starred' | 'all'
+  const [pickerSearch,     setPickerSearch]     = useState('');
+  const [pickerCategories_, setPickerCategories_] = useState(new Set()); // multi-select
+  const [pickerMinScore,   setPickerMinScore]   = useState(0);
+
+  // Reset filters when mode toggles
+  useEffect(() => { setPickerCategories_(new Set()); setPickerMinScore(0); }, [pickerMode]);
+
+  /* ── Adding guard — prevents double-write on rapid clicks or drag+click ─── */
+  const addingRef = useRef(new Set()); // Set of spotIds currently being added
+
+  /* ── DnD active item (for overlay) ──────────────────────────────────────── */
+  const [activeItem, setActiveItem] = useState(null); // { type: 'picker'|'placed', spot }
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  /* ── DnD helpers ─────────────────────────────────────────────────────────── */
+  function findInSlots(dayPlanSpotId, src = allSlotsRef.current) {
+    for (const dayId of Object.keys(src)) {
+      for (const slot of SLOTS) {
+        const arr = src[dayId]?.[slot] ?? [];
+        const idx = arr.findIndex(s => s.dayPlanSpotId === dayPlanSpotId);
+        if (idx >= 0) return { dayId, slot, idx };
+      }
+    }
+    return null;
+  }
+
+  function resolveContainer(id, src = allSlotsRef.current) {
+    const s = String(id);
+    if (s.startsWith('zone__')) {
+      const parts = s.split('__');
+      return { dayId: parts[1], slot: parts[2] };
+    }
+    const loc = findInSlots(s, src);
+    return loc ? { dayId: loc.dayId, slot: loc.slot } : null;
+  }
+
+  /* ── DnD event handlers ──────────────────────────────────────────────────── */
+  function onDragStart({ active }) {
+    const id = String(active.id);
+    if (id.startsWith('pick__')) {
+      const spot = spotMap[id.replace('pick__', '')];
+      setActiveItem({ type: 'picker', spot });
+    } else {
+      const loc = findInSlots(id);
+      if (loc) {
+        const spot = allSlotsRef.current[loc.dayId][loc.slot][loc.idx];
+        setActiveItem({ type: 'placed', spot });
+      }
+    }
+  }
+
+  function onDragOver({ active, over }) {
+    if (!over) return;
+    const activeId = String(active.id);
+    if (activeId.startsWith('pick__')) return; // picker drops handled in onDragEnd
+
+    // Current location of the dragged item
+    let srcDayId, srcSlot;
+    for (const dayId of Object.keys(allSlotsRef.current)) {
+      for (const s of SLOTS) {
+        if ((allSlotsRef.current[dayId]?.[s] ?? []).some(sp => sp.dayPlanSpotId === activeId)) {
+          srcDayId = dayId; srcSlot = s;
+          break;
+        }
+      }
+      if (srcDayId) break;
+    }
+    if (!srcDayId) return;
+
+    const tgt = resolveContainer(over.id);
+    if (!tgt || (tgt.dayId === srcDayId && tgt.slot === srcSlot)) return;
+
+    // Optimistic cross-container move
+    setAllSlots(prev => {
+      const spot = prev[srcDayId]?.[srcSlot]?.find(sp => sp.dayPlanSpotId === activeId);
+      if (!spot) return prev;
+      return {
+        ...prev,
+        [srcDayId]: { ...prev[srcDayId], [srcSlot]: prev[srcDayId][srcSlot].filter(sp => sp.dayPlanSpotId !== activeId) },
+        [tgt.dayId]: { ...prev[tgt.dayId], [tgt.slot]: [...(prev[tgt.dayId]?.[tgt.slot] ?? []), { ...spot, timeOfDay: tgt.slot }] },
+      };
+    });
+  }
+
+  async function onDragEnd({ active, over }) {
+    setActiveItem(null);
+
+    if (!over) {
+      // Cancelled — restore from props
+      setAllSlots(initSlots(days));
+      return;
+    }
+
+    const activeId = String(active.id);
+    const overId   = String(over.id);
+
+    // ── Case 1: Picker drop ─────────────────────────────────────────────────
+    if (activeId.startsWith('pick__')) {
+      const spotId = activeId.replace('pick__', '');
+      const tgt    = resolveContainer(overId);
+      if (!tgt) return;
+      const day = days.find(d => d.id === tgt.dayId);
+      if (!day) return;
+      const addKey = `${spotId}:${tgt.slot}`;
+      if (addingRef.current.has(addKey)) return; // in-flight guard
+      addingRef.current.add(addKey);
+      try {
+        await addSpotToDayPlan(day.id, spotId, city, tgt.slot);
+        onRefetch();
+      } catch (err) {
+        console.error('[DaysBuilder] addSpotToDayPlan:', err);
+        toast?.error?.('Failed to add spot');
+      } finally {
+        addingRef.current.delete(addKey);
+      }
+      return;
+    }
+
+    // ── Case 2: Placed spot drop ────────────────────────────────────────────
+    // Find current location after any onDragOver moves
+    let srcDayId, srcSlot;
+    for (const dayId of Object.keys(allSlotsRef.current)) {
+      for (const s of SLOTS) {
+        if ((allSlotsRef.current[dayId]?.[s] ?? []).some(sp => sp.dayPlanSpotId === activeId)) {
+          srcDayId = dayId; srcSlot = s;
+          break;
+        }
+      }
+      if (srcDayId) break;
+    }
+    if (!srcDayId) return;
+
+    const tgt = resolveContainer(overId);
+    if (!tgt) return;
+
+    // Same container + dropped on another spot → apply arrayMove
+    if (tgt.dayId === srcDayId && tgt.slot === srcSlot && !overId.startsWith('zone__')) {
+      setAllSlots(prev => {
+        const items  = prev[tgt.dayId][tgt.slot];
+        const oldIdx = items.findIndex(s => s.dayPlanSpotId === activeId);
+        const newIdx = items.findIndex(s => s.dayPlanSpotId === overId);
+        if (oldIdx < 0 || newIdx < 0 || oldIdx === newIdx) return prev;
+        return { ...prev, [tgt.dayId]: { ...prev[tgt.dayId], [tgt.slot]: arrayMove(items, oldIdx, newIdx) } };
+      });
+    }
+
+    // Persist entire state to Firestore
+    setTimeout(async () => {
+      try {
+        const writes = [];
+        for (const dayId of Object.keys(allSlotsRef.current)) {
+          for (const slot of SLOTS) {
+            (allSlotsRef.current[dayId]?.[slot] ?? []).forEach((sp, idx) => {
+              writes.push(updateDayPlanSpotSlot(sp.dayPlanSpotId, slot, idx));
+            });
+          }
+        }
+        await Promise.all(writes);
+      } catch (err) {
+        console.error('[DaysBuilder] persist error:', err);
+      }
+    }, 0);
+  }
+
+  /* ── Remove spot ─────────────────────────────────────────────────────────── */
+  async function handleRemove(dayPlanSpotId) {
+    // Optimistic remove
+    setAllSlots(prev => {
+      const next = {};
+      for (const dayId of Object.keys(prev)) {
+        next[dayId] = {};
+        for (const slot of SLOTS) {
+          next[dayId][slot] = (prev[dayId]?.[slot] ?? []).filter(s => s.dayPlanSpotId !== dayPlanSpotId);
+        }
+      }
+      return next;
+    });
+    try {
+      await removeDayPlanSpot(dayPlanSpotId);
+    } catch (err) {
+      console.error('[DaysBuilder] remove error:', err);
+      onRefetch(); // restore on failure
+    }
+  }
+
+  /* ── Picker quick-add (click) → Day 1, Morning ───────────────────────────── */
+  async function handlePickerAdd(spot) {
+    const firstDay = days[0];
+    if (!firstDay) return;
+    const addKey = `${spot.id}:morning`;
+    if (addingRef.current.has(addKey)) return; // in-flight guard
+    addingRef.current.add(addKey);
+    try {
+      await addSpotToDayPlan(firstDay.id, spot.id, city, 'morning');
+      onRefetch();
+    } catch (err) {
+      console.error('[DaysBuilder] quickAdd error:', err);
+    } finally {
+      addingRef.current.delete(addKey);
+    }
+  }
+
+  /* ── Picker list ─────────────────────────────────────────────────────────── */
+  const pickerBase = useMemo(
+    () => pickerMode === 'starred' ? spots.filter(s => savedIds.has(s.id)) : spots,
+    [spots, savedIds, pickerMode],
+  );
+
+  const availableCategories = useMemo(
+    () => [...new Set(pickerBase.map(s => s.category).filter(Boolean))].sort(),
+    [pickerBase],
+  );
+
+  const pickerSpots = useMemo(() => {
+    let s = pickerBase;
+    if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(sp.category ?? ''));
+    if (pickerMinScore > 0) s = s.filter(sp => (sp.hiddennessScore ?? 1) >= pickerMinScore);
+    const q = pickerSearch.toLowerCase().trim();
+    if (q) s = s.filter(sp => sp.name?.toLowerCase().includes(q) || sp.category?.toLowerCase().includes(q));
+    return [...s].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
+  }, [pickerBase, pickerCategories_, pickerMinScore, pickerSearch]);
+
+  /* ── Totals ─────────────────────────────────────────────────────────────── */
+  const totalSpots = useMemo(() =>
+    Object.values(allSlots_).reduce((sum, d) => sum + SLOTS.reduce((s, sl) => s + (d[sl]?.length ?? 0), 0), 0),
+    [allSlots_]
+  );
+  const totalCost = useMemo(() =>
+    Object.values(allSlots_).reduce((sum, d) => sum + SLOTS.flatMap(sl => d[sl] ?? []).reduce((s, sp) => s + (sp.entryPrice ?? 0), 0), 0),
+    [allSlots_]
+  );
+
+  /* ── Loading / no-days states ────────────────────────────────────────────── */
+  if (daysLoading) {
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 10, padding: '20px', overflowY: 'auto' }}>
+        {[1, 2, 3].map(i => (
+          <div key={i} style={{ height: 100, background: 'var(--card)', borderRadius: 12, border: '1px solid var(--border)', animation: 'pulse 1.5s ease-in-out infinite', animationDelay: `${i * 0.1}s` }} />
+        ))}
+      </div>
+    );
+  }
+
+  if (!days.length) {
+    return (
+      <div className="empty-state">
+        <div className="empty-state-icon">📅</div>
+        <h3>No day plans yet</h3>
+        <p>Create a trip with dates to auto-generate day slots, then drag your starred spots into them.</p>
+      </div>
+    );
+  }
+
+  /* ── Render ──────────────────────────────────────────────────────────────── */
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDragEnd={onDragEnd}
+    >
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+
+        {/* ══ Left: Spot Picker ════════════════════════════════════════════ */}
+        <div style={{
+          width: 300, flexShrink: 0,
+          borderRight: '1px solid var(--border)',
+          display: 'flex', flexDirection: 'column',
+          overflow: 'hidden',
+          background: 'var(--bg)',
+        }}>
+          {/* Starred / All toggle */}
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+              {[['starred', '★ Starred'], ['all', '☰ All spots']].map(([mode, label]) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setPickerMode(mode)}
+                  style={{
+                    flex: 1, padding: '6px 8px', border: 'none',
+                    background: pickerMode === mode ? 'var(--accent-dim)' : 'transparent',
+                    color: pickerMode === mode ? 'var(--accent)' : 'var(--muted)',
+                    fontSize: '0.73rem', fontWeight: pickerMode === mode ? 600 : 400,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Search */}
+          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ flexShrink: 0, color: 'var(--muted)' }}>
+                <circle cx="11" cy="11" r="7" />
+                <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search spots, categories…"
+                value={pickerSearch}
+                onChange={e => setPickerSearch(e.target.value)}
+                style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: '0.78rem', outline: 'none' }}
+              />
+              {pickerSearch && (
+                <button type="button" onClick={() => setPickerSearch('')} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: 0 }}>×</button>
+              )}
+            </div>
+          </div>
+
+          {/* Category filter chips — multi-select, wraps naturally */}
+          {availableCategories.length > 1 && (
+            <div style={{ padding: '6px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                <button type="button" className={'chip' + (pickerCategories_.size === 0 ? ' on' : '')} onClick={() => setPickerCategories_(new Set())} style={{ fontSize: '0.67rem', padding: '4px 10px' }}>All</button>
+                {availableCategories.map(cat => (
+                  <button key={cat} type="button"
+                    className={'chip' + (pickerCategories_.has(cat) ? ' on' : '')}
+                    onClick={() => setPickerCategories_(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n; })}
+                    style={{ fontSize: '0.67rem', padding: '4px 10px' }}>
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Score filter chips — single-select, wraps naturally */}
+          <div style={{ padding: '5px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+              {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Radar', min: 7 }, { label: '9+ Ultra', min: 9 }].map(({ label, min }) => (
+                <button key={min} type="button"
+                  className={'chip' + (pickerMinScore === min ? ' on' : '')}
+                  onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
+                  style={{ fontSize: '0.67rem', padding: '4px 10px' }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Spot list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
+            {pickerSpots.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '32px 12px', color: 'var(--muted)' }}>
+                {pickerMode === 'starred' ? (
+                  <>
+                    <div style={{ fontSize: '1.8rem', marginBottom: 10 }}>★</div>
+                    <p style={{ fontSize: '0.8rem', lineHeight: 1.6, marginBottom: 14 }}>
+                      No starred spots yet.<br />Star spots in Research to build your itinerary.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onSwitchToResearch}
+                      style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '0.8rem', fontWeight: 600, cursor: 'pointer' }}
+                    >
+                      ← Go to Research
+                    </button>
+                  </>
+                ) : (
+                  <p style={{ fontSize: '0.8rem', lineHeight: 1.5 }}>No spots match your search.</p>
+                )}
+              </div>
+            ) : (
+              pickerSpots.map(spot => (
+                <PickerSpot
+                  key={spot.id}
+                  spot={spot}
+                  isAdded={addedSpotIds.has(spot.id)}
+                  onAdd={handlePickerAdd}
+                />
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* ══ Right: Day Planner ═══════════════════════════════════════════ */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+
+          {/* Toolbar */}
+          <div style={{
+            flexShrink: 0, padding: '10px 16px',
+            borderBottom: '1px solid var(--border)',
+            display: 'flex', alignItems: 'center', gap: 10,
+            background: 'var(--bg)',
+          }}>
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              {totalSpots > 0 && (
+                <>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>
+                    {totalSpots} spot{totalSpots !== 1 ? 's' : ''} planned
+                  </span>
+                  {totalCost > 0 && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontWeight: 600 }}>
+                      ~€{totalCost}/pp
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* PDF export */}
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  toast?.info?.('Generating PDF…');
+                  await exportItineraryPDF({ days, allSlots: allSlotsRef.current, city, selectedDest, trip });
+                  track('itinerary_exported', { tripId, dayCount: days.length });
+                } catch (err) {
+                  console.error('[DaysBuilder] PDF error:', err);
+                  toast?.error?.('PDF export failed');
+                }
+              }}
+              style={{
+                padding: '6px 12px', borderRadius: 8,
+                background: 'transparent', border: '1px solid var(--border)',
+                color: 'var(--muted)', fontSize: '0.75rem', fontWeight: 600,
+                cursor: 'pointer', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 4,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--muted)'; }}
+            >
+              ⬇ PDF
+            </button>
+
+            {/* Save as template */}
+            <button
+              type="button"
+              title="Share this itinerary as a community template"
+              onClick={async () => {
+                if (!selectedDest?.city || !user?.uid) return;
+                try {
+                  await saveTripAsTemplate(selectedDest.city, user.uid, days);
+                  toast?.success?.('Template saved! Others planning ' + selectedDest.city + ' can discover it.');
+                } catch (e) {
+                  console.error(e);
+                  toast?.error?.('Could not save template');
+                }
+              }}
+              style={{
+                padding: '6px 12px', borderRadius: 8,
+                background: 'transparent', border: '1px solid var(--border)',
+                color: 'var(--muted)', fontSize: '0.75rem', fontWeight: 600,
+                cursor: 'pointer', transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 4,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--muted)'; }}
+            >
+              📋 Template
+            </button>
+          </div>
+
+          {/* Scrollable day list */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+            {days.map(day => (
+              <DaySection
+                key={day.id}
+                day={day}
+                slots={allSlots_[day.id] ?? { morning: [], afternoon: [], evening: [] }}
+                onRemove={handleRemove}
+              />
+            ))}
+
+            {/* No spots yet */}
+            {totalSpots === 0 && (
+              <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
+                <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>📅</div>
+                <p style={{ fontSize: '0.88rem', lineHeight: 1.7, marginBottom: 18, maxWidth: 320, margin: '0 auto 18px' }}>
+                  Star spots in Research, then drag them from the sidebar into your day slots.
+                </p>
+                <button
+                  type="button"
+                  onClick={onSwitchToResearch}
+                  style={{
+                    background: 'var(--accent)', color: '#000', border: 'none',
+                    borderRadius: 8, padding: '10px 22px', fontWeight: 600,
+                    fontSize: '0.875rem', cursor: 'pointer',
+                  }}
+                >
+                  ← Research spots
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Drag overlay */}
+      <DragOverlay dropAnimation={{ duration: 180, easing: 'ease' }}>
+        {activeItem?.type === 'picker' && activeItem.spot && <PickerSpotOverlay spot={activeItem.spot} />}
+        {activeItem?.type === 'placed' && activeItem.spot && <PlacedSpotOverlay spot={activeItem.spot} />}
+      </DragOverlay>
+    </DndContext>
+  );
+}

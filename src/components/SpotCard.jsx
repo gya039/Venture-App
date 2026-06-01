@@ -1,148 +1,210 @@
 'use client';
 
-import Link from 'next/link';
+import { useState, useEffect } from 'react';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { INTERESTS } from '@/constants/interests';
+import { track } from '@/lib/analytics';
+import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
+import ScoreMedallion from '@/components/ScoreMedallion';
 
 /**
- * SpotCard — compact row in the trip Research list.
+ * SpotCard — Field Guide edition.
  *
- * Props:
- *   spot      {object}   Firestore spot doc
- *   destId    {string}
- *   tripId    {string}
- *   active    {boolean}  Expands description / detail
- *   onSelect  {fn}       Called when the row is clicked
+ * Layout: ScoreMedallion (50px) · [mono cat·hood / serif name / italic tier] · icon buttons
+ *
+ * Props (all existing callers remain compatible):
+ *   spot         {object}   Firestore spot doc
+ *   active       {boolean}  Highlighted (keyboard nav / map sync)
+ *   reveal       {boolean}  Animate on first appearance (streaming)
+ *   justFound    {boolean}  Show "Just found" badge
+ *   onSelect     {fn}       Row click handler
+ *   saved        {boolean}  Starred state
+ *   onToggleSave {fn}       (spot, newState) → void
+ *   onOpenDrawer {fn}       (spot) → void
+ *   onAddToDay   {fn}       (spot) → void
+ *   rank         {number?}  Discover mode rank number
+ *   savesCount   {number?}  Community save count (Discover mode)
+ *   visited      {boolean}
+ *   isPastTrip   {boolean}
+ *   reviewAggregate {object?} { avgRating, count }
+ *   userRating   {number}   0 = not rated
+ *   onRate       {fn?}      (spotId, rating) → void
  */
-export default function SpotCard({ spot, destId, tripId, active = false, onSelect }) {
-  const level = getHiddennessLevel(spot?.hiddennessScore ?? 1);
-  const pct   = Math.round(((spot?.hiddennessScore ?? 1) / 10) * 100);
+export default function SpotCard({
+  spot,
+  active       = false,
+  reveal       = false,
+  justFound    = false,
+  onSelect,
+  saved        = false,
+  onToggleSave,
+  onOpenDrawer,
+  onAddToDay,
+  rank,
+  savesCount,
+  visited      = false,
+  isPastTrip   = false,
+  reviewAggregate = null,
+  userRating   = 0,
+  onRate       = null,
+}) {
+  const score = spot?.hiddennessScore ?? 1;
+  const level = getHiddennessLevel(score);
 
-  const href = `/spots/${spot.id}?city=${encodeURIComponent(spot.city ?? '')}&destId=${destId ?? ''}&tripId=${tripId ?? ''}`;
+  // Optimistic bookmark
+  const [isSaved, setIsSaved] = useState(saved);
+  useEffect(() => { setIsSaved(saved); }, [saved]);
 
-  const interestIcons = (spot.interests ?? [])
-    .map((id) => INTERESTS.find((i) => i.id === id))
-    .filter(Boolean)
-    .slice(0, 3);
+  // Category label: use spot.category, or first interest label
+  const catLabel = spot?.category
+    ?? INTERESTS.find((i) => (spot?.interests ?? [])[0] === i.id)?.label
+    ?? '';
+
+
+  const todayHrs = getTodayHours(spot?.openingHours);
+  const isClosed = todayHrs === 'Closed';
+
+  function handleStar(e) {
+    e.stopPropagation();
+    const next = !isSaved;
+    setIsSaved(next);
+    onToggleSave?.(spot, next);
+    if (next) track('spot_starred', { spotId: spot.id, city: spot.city, hiddennessScore: score });
+  }
+
+  const priceLabel = spot?.entryPrice != null
+    ? `€${spot.entryPrice}`
+    : null;
 
   return (
     <div
+      className={
+        'spotcard' +
+        (reveal  ? ' reveal' : '') +
+        (active  ? ' active' : '') +
+        // hover class `hot` is applied via inline onMouseEnter/Leave so existing map-sync still works
+        ''
+      }
+      style={{ '--sc': `var(${level.cssVar})` }}
       onClick={onSelect}
-      style={{
-        background:   active ? 'rgba(212,168,75,0.05)' : 'transparent',
-        borderLeft:   `3px solid ${active ? level.color : 'transparent'}`,
-        borderBottom: '1px solid var(--border)',
-        padding:      active ? '12px 16px 14px 13px' : '10px 16px 10px 13px',
-        cursor:       'pointer',
-        transition:   'background 0.12s',
-        userSelect:   'none',
-      }}
-      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = 'var(--card-hover)'; }}
-      onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.classList.add('hot'); }}
+      onMouseLeave={(e) => { e.currentTarget.classList.remove('hot'); }}
     >
-      {/* Row 1: name + price + chevron */}
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
-        <p style={{
-          fontWeight:   600,
-          fontSize:     '0.875rem',
-          color:        'var(--text-primary)',
-          lineHeight:   1.3,
-          flex:         1,
-          overflow:     'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace:   'nowrap',
-        }}>
-          {spot.name}
-        </p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-          {spot.entryPrice != null ? (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>
-              €{spot.entryPrice}/pp
-            </span>
-          ) : (
-            <span style={{ fontSize: '0.72rem', color: 'var(--green)', fontWeight: 600 }}>Free</span>
-          )}
-          <span style={{
-            color:      active ? level.color : 'var(--text-muted)',
-            fontSize:   '0.8rem',
-            lineHeight: 1,
-            display:    'inline-block',
-            transform:  active ? 'rotate(90deg)' : 'none',
-            transition: 'transform 0.15s, color 0.15s',
-          }}>›</span>
-        </div>
-      </div>
+      {/* "Just found" badge — fades out after 2.4s via CSS */}
+      {justFound && <span className="justfound">Just found</span>}
 
-      {/* Row 2: hiddenness dot + label + bar + interest icons */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-        <span style={{
-          width:        6,
-          height:       6,
-          borderRadius: '50%',
-          background:   level.color,
-          flexShrink:   0,
-          boxShadow:    active ? `0 0 5px ${level.color}80` : 'none',
-        }} />
-        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: level.color, whiteSpace: 'nowrap' }}>
-          {level.label}
-        </span>
-        <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
-          {spot.hiddennessScore}/10
-        </span>
-        <div style={{ width: 48, height: 2, background: 'var(--border)', borderRadius: 1, overflow: 'hidden', flexShrink: 0 }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: level.color, borderRadius: 1 }} />
+      {/* Discover rank */}
+      {rank != null && <span className="sc-rank">{rank}</span>}
+
+      {/* Score medallion */}
+      <ScoreMedallion score={score} size={50} animate={reveal} />
+
+      {/* Text block — click to open drawer */}
+      <div
+        className="sc-main"
+        onClick={(e) => { if (onOpenDrawer) { e.stopPropagation(); onOpenDrawer(spot); } }}
+        style={{ cursor: onOpenDrawer ? 'pointer' : 'inherit' }}
+      >
+        <div className="sc-cat">
+          {catLabel}
         </div>
-        {interestIcons.length > 0 && (
-          <div style={{ display: 'flex', gap: 2, marginLeft: 'auto' }}>
-            {interestIcons.map((i) => (
-              <span key={i.id} title={i.label} style={{ fontSize: '0.7rem' }}>{i.icon}</span>
-            ))}
+        <div className="sc-name">
+          {spot?.name}
+          {visited && (
+            <span className="spot-visited-tag" style={{ marginLeft: 6, fontSize: '0.55rem' }}>✓</span>
+          )}
+        </div>
+        <div className="sc-tier">
+          {level.label}
+          {savesCount != null && (
+            <span className="sc-saved">★ {savesCount} saved</span>
+          )}
+          {/* Compact meta: price · hours */}
+          {(priceLabel || (todayHrs && !isClosed)) && (
+            <span className="sc-saved">
+              {priceLabel ? ` · ${priceLabel}` : ' · Free'}
+              {todayHrs && !isClosed && ` · ${todayHrs}`}
+              {isClosed && (
+                <span style={{ color: 'var(--error)', fontStyle: 'normal' }}> · {getClosureLabel(spot?.openingHours)}</span>
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Closure alert */}
+        {spot?.closureStatus && spot.closureStatus !== 'open' && (
+          <div style={{
+            marginTop: 4,
+            fontSize: '0.65rem', fontFamily: 'var(--mono)',
+            color: spot.closureStatus === 'permanently_closed' ? 'var(--error)' : 'var(--t3)',
+            fontWeight: 700,
+          }}>
+            {spot.closureStatus === 'temporarily_closed' && '⚠ Temporarily closed'}
+            {spot.closureStatus === 'permanently_closed' && '✕ Permanently closed'}
+            {spot.closureStatus === 'seasonal'           && '🗓 Seasonal'}
           </div>
         )}
       </div>
 
-      {/* Expanded panel */}
-      {active && (
-        <div style={{ marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
-          {spot.description && (
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 7 }}>
-              {spot.description}
-            </p>
-          )}
-          {spot.whyHidden && (
-            <p style={{
-              fontSize:    '0.75rem',
-              color:       'var(--text-muted)',
-              lineHeight:  1.55,
-              fontStyle:   'italic',
-              marginBottom: 8,
-            }}>
-              💡 {spot.whyHidden}
-            </p>
-          )}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 6 }}>
-            {spot.address && (
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 3 }}>
-                📍 {spot.address}
-              </span>
-            )}
-            <Link
-              href={href}
-              onClick={(e) => e.stopPropagation()}
+      {/* Action buttons */}
+      <div className="sc-acts">
+        {/* Star */}
+        <button
+          type="button"
+          className={'icbtn' + (isSaved ? ' on' : '')}
+          title={isSaved ? 'Remove star' : 'Star this spot'}
+          onClick={handleStar}
+        >
+          <svg viewBox="0 0 24 24" fill={isSaved ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+            <path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 17l-5.4 2.6 1.2-6L3.3 9.4l6.1-.8z" />
+          </svg>
+        </button>
+
+        {/* Add to day / open drawer */}
+        {onAddToDay && (
+          <button
+            type="button"
+            className="icbtn"
+            title="Add to a day"
+            onClick={(e) => { e.stopPropagation(); onAddToDay(spot); }}
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {/* ── Past-trip star rating (shown inline below for rated spots) ── */}
+      {isPastTrip && onRate && (
+        <div
+          style={{
+            position: 'absolute', bottom: 8, left: 78, display: 'flex', gap: 2, alignItems: 'center',
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {[1,2,3,4,5].map((star) => (
+            <button
+              key={star}
+              type="button"
+              onClick={() => onRate(spot.id, star)}
               style={{
-                display:        'inline-flex',
-                alignItems:     'center',
-                gap:            3,
-                fontSize:       '0.78rem',
-                fontWeight:     600,
-                color:          'var(--accent)',
-                textDecoration: 'none',
-                marginLeft:     'auto',
+                background: 'none', border: 'none', padding: '0 1px',
+                fontSize: '0.85rem', cursor: 'pointer', lineHeight: 1,
+                color: star <= userRating ? 'var(--t5)' : 'var(--faint)',
+                transition: 'color 0.1s',
               }}
+              onMouseEnter={(e) => e.currentTarget.style.color = 'var(--t5)'}
+              onMouseLeave={(e) => e.currentTarget.style.color = star <= userRating ? 'var(--t5)' : 'var(--faint)'}
             >
-              Full details →
-            </Link>
-          </div>
+              {star <= userRating ? '★' : '☆'}
+            </button>
+          ))}
+          {reviewAggregate?.count > 0 && (
+            <span style={{ fontSize: '0.62rem', fontFamily: 'var(--mono)', color: 'var(--muted)', marginLeft: 4 }}>
+              {reviewAggregate.avgRating.toFixed(1)} ({reviewAggregate.count})
+            </span>
+          )}
         </div>
       )}
     </div>

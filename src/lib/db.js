@@ -16,6 +16,7 @@ import {
   doc,
   getDoc,
   getDocs,
+  getDocsFromServer,
   addDoc,
   setDoc,
   updateDoc,
@@ -23,6 +24,7 @@ import {
   query,
   where,
   orderBy,
+  limit,
   onSnapshot,
   serverTimestamp,
   Timestamp,
@@ -95,6 +97,7 @@ function assembleTripsSync(tripDocs, destsByTripId) {
       name:        trip.name ?? null,
       isMultiCity: trip.isMultiCity ?? false,
       interests:   trip.interests ?? [],
+      coverPhoto:  trip.coverPhoto ?? null,
       createdAt:   toISO(trip.createdAt),
       destinations,
     };
@@ -198,8 +201,22 @@ export function listenTrips(userId, onUpdate, onError) {
  *   startDate: 'YYYY-MM-DD', endDate: 'YYYY-MM-DD'
  * }]
  */
+async function fetchCityPhoto(cityName) {
+  try {
+    const key = process.env.NEXT_PUBLIC_UNSPLASH_ACCESS_KEY;
+    if (!key) return null;
+    const r = await fetch(
+      `https://api.unsplash.com/search/photos?query=${encodeURIComponent(cityName + ' city')}&per_page=1&orientation=landscape&client_id=${key}`
+    );
+    const d = await r.json();
+    return d.results?.[0]?.urls?.regular ?? null;
+  } catch { return null; }
+}
+
 export async function createTrip({ userId, name, isMultiCity, interests, destinations }) {
   const batch = writeBatch(db);
+
+  const coverPhoto = await fetchCityPhoto(destinations[0].city);
 
   // Trip doc
   const tripRef = doc(collection(db, 'trips'));
@@ -210,6 +227,7 @@ export async function createTrip({ userId, name, isMultiCity, interests, destina
     isMultiCity: isMultiCity ?? false,
     interests:   interests ?? [],
     firstStartDate,
+    coverPhoto:  coverPhoto ?? null,
     createdAt:   serverTimestamp(),
   });
 
@@ -250,53 +268,104 @@ export async function deleteTrip(tripId) {
 // Spots (city-level cache)
 // ---------------------------------------------------------------------------
 
-/** Returns all cached spots for a city, sorted by hiddenness desc */
+/** Returns all cached spots for a city, sorted by hiddenness desc.
+ *  Merges with static seed data when Firestore has fewer than 5 spots. */
 export async function getCachedSpots(city) {
+  city = city.toLowerCase();
+  const { getStaticSpots } = await import('@/data/citySpots');
+
   const q = query(
     collection(db, 'citySpots', city, 'spots'),
     orderBy('hiddennessScore', 'desc')
   );
-  const snaps = await getDocs(q);
-  return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
-}
+  // Bypass the local IndexedDB cache so we always read the current server state.
+  const snaps = await getDocsFromServer(q);
+  const firestoreSpots = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 
-/** Writes an array of spot objects into the citySpots cache.
- *  Deletes any existing spots for the city first so re-research
- *  replaces stale data instead of stacking duplicates on top. */
-export async function cacheSpots(city, spots) {
-  // 1. Remove old spots (writeBatch supports up to 500 ops; typical cache ≤ 30)
-  const oldSnaps = await getDocs(collection(db, 'citySpots', city, 'spots'));
-  if (oldSnaps.docs.length > 0) {
-    const delBatch = writeBatch(db);
-    oldSnaps.docs.forEach((d) => delBatch.delete(d.ref));
-    await delBatch.commit();
+  const staticSpots = getStaticSpots(city);
+  if (staticSpots.length === 0) return firestoreSpots;
+
+  // If Firestore has a good set already, return it as-is
+  if (firestoreSpots.length >= 5) {
+    // Append any static spots whose name isn't already in Firestore
+    const firestoreNames = new Set(firestoreSpots.map((s) => s.name?.toLowerCase()));
+    const newStatic = staticSpots.filter((s) => !firestoreNames.has(s.name?.toLowerCase()));
+    return [...firestoreSpots, ...newStatic].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
   }
 
-  // 2. Write new spots
+  // Firestore thin/empty — return static data (plus whatever Firestore has)
+  const staticNames = new Set(staticSpots.map((s) => s.name?.toLowerCase()));
+  const extra = firestoreSpots.filter((s) => !staticNames.has(s.name?.toLowerCase()));
+  return [...staticSpots, ...extra].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
+}
+
+/** Writes spot objects into the citySpots/{city}/spots collection.
+ *
+ *  force=false (default): additive — only writes spots whose names are not
+ *    already present in Firestore, preserving existing cached research.
+ *  force=true: destructive — deletes all existing spots first, then writes
+ *    the full incoming array (used on explicit "Refresh" re-research). */
+export async function cacheSpots(city, spots, force = false) {
+  city = city.toLowerCase();
+  const spotsRef = collection(db, 'citySpots', city, 'spots');
+
+  let spotsToWrite = spots;
+  if (!force) {
+    // Additive: read existing names, skip spots already present
+    const existingSnaps = await getDocsFromServer(spotsRef);
+    const existingNames = new Set(
+      existingSnaps.docs.map((d) => (d.data().name ?? '').toLowerCase().trim())
+    );
+    spotsToWrite = spots.filter(
+      (s) => !existingNames.has((s.name ?? '').toLowerCase().trim())
+    );
+    if (spotsToWrite.length === 0) return 0;
+  } else {
+    // Destructive: remove all existing spots before writing the new set.
+    // Use getDocsFromServer to bypass IndexedDB so stale server docs are visible.
+    const oldSnaps = await getDocsFromServer(spotsRef);
+    if (oldSnaps.docs.length > 0) {
+      const delBatch = writeBatch(db);
+      oldSnaps.docs.forEach((d) => delBatch.delete(d.ref));
+      await delBatch.commit();
+    }
+  }
+
+  // Write spots — supports both camelCase (new API) and legacy snake_case fields
   const batch = writeBatch(db);
-  spots.forEach((spot) => {
-    const ref = doc(collection(db, 'citySpots', city, 'spots'));
+  spotsToWrite.forEach((spot) => {
+    const ref = doc(spotsRef);
     batch.set(ref, {
       city,
-      name:             spot.name,
-      description:      spot.description ?? null,
-      whyHidden:        spot.why_hidden ?? null,
-      hiddennessScore:  spot.hiddenness_score,
-      hiddennessLabel:  spot.hiddenness_label,
-      lat:              spot.lat ?? null,
-      lng:              spot.lng ?? null,
-      address:          spot.address ?? null,
-      entryPrice:       spot.entry_price ?? null,
-      currency:         spot.currency ?? 'EUR',
-      interests:        spot.interests ?? [],
-      sources:          spot.sources ?? [],
-      coordsMissing:    spot.coordsMissing ?? false,
-      createdAt:        serverTimestamp(),
+      name:                 spot.name,
+      description:          spot.description ?? null,
+      whyHidden:            spot.whyHidden            ?? spot.why_hidden          ?? null,
+      hiddennessReason:     spot.hiddennessReason      ?? null,
+      hiddennessScore:      spot.hiddennessScore       ?? spot.hiddenness_score   ?? 1,
+      hiddennessLabel:      spot.hiddennessLabel       ?? spot.hiddenness_label   ?? null,
+      category:             spot.category              ?? null,
+      interests:            spot.interests             ?? [],
+      entryPrice:           spot.entryPrice            ?? spot.entry_price        ?? null,
+      currency:             spot.currency              ?? 'EUR',
+      closureStatus:        spot.closureStatus         ?? 'open',
+      openingHours:         spot.openingHours          ?? null,
+      bestTimeToVisit:      spot.bestTimeToVisit       ?? null,
+      visitDurationMinutes: spot.visitDurationMinutes  ?? null,
+      address:              spot.address               ?? null,
+      neighbourhood:        spot.neighbourhood         ?? null,
+      lat:                  spot.lat      ?? spot.latitude  ?? null,
+      lng:                  spot.lng      ?? spot.longitude ?? null,
+      coordsMissing:        spot.coordsMissing         ?? false,
+      geocodeSource:        spot.geocodeSource         ?? null,
+      tips:                 spot.tips                  ?? [],
+      avoid:                spot.avoid                 ?? null,
+      nearbySpots:          spot.nearbySpots           ?? [],
+      createdAt:            serverTimestamp(),
     });
   });
   await batch.commit();
 
-  return spots.length;
+  return spotsToWrite.length;
 }
 
 /** Mark a destination as research-complete */
@@ -327,6 +396,7 @@ export async function getDestinationWithSpots(destinationId) {
  * Fetch a single spot from the city cache.
  */
 export async function getSpot(city, spotId) {
+  city = city.toLowerCase();
   const snap = await getDoc(doc(db, 'citySpots', city, 'spots', spotId));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
@@ -373,14 +443,23 @@ export async function generateDayPlans(destinationId, userId, tripId, startDate,
 }
 
 export async function addSpotToDayPlan(dayPlanId, spotId, spotCity, timeOfDay = 'morning') {
-  const q = query(collection(db, 'dayPlanSpots'), where('dayPlanId', '==', dayPlanId));
-  const existing = await getDocs(q);
+  // Use server-side read to bypass IndexedDB cache — prevents race-condition duplicates
+  // when the user clicks + rapidly or the same spot is dropped multiple times.
+  const allSnap = await getDocsFromServer(
+    query(collection(db, 'dayPlanSpots'), where('dayPlanId', '==', dayPlanId))
+  );
+  // Idempotency: skip if this spot is already in this exact slot
+  const alreadyExists = allSnap.docs.some(
+    d => d.data().spotId === spotId && d.data().timeOfDay === timeOfDay
+  );
+  if (alreadyExists) return;
+
   await addDoc(collection(db, 'dayPlanSpots'), {
     dayPlanId,
     spotId,
     spotCity,
     timeOfDay,
-    sortOrder: existing.size,
+    sortOrder: allSnap.size,
   });
 }
 
@@ -394,6 +473,48 @@ export async function getDayPlanSpots(dayPlanId) {
   return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
+/** Update the time-of-day slot and sort order for a day plan spot (used by dnd-kit drag) */
+export async function updateDayPlanSpotSlot(id, timeOfDay, sortOrder) {
+  await updateDoc(doc(db, 'dayPlanSpots', id), { timeOfDay, sortOrder });
+}
+
+/** Remove a spot from a day plan */
+export async function removeDayPlanSpot(dayPlanSpotId) {
+  await deleteDoc(doc(db, 'dayPlanSpots', dayPlanSpotId));
+}
+
+/** Returns unique cities the user has researched, sorted newest first */
+export async function getResearchedCities(userId) {
+  const q = query(
+    collection(db, 'destinations'),
+    where('userId', '==', userId),
+    where('researchDone', '==', true),
+  );
+  const snaps = await getDocs(q);
+  // Deduplicate by city name, keep latest researchAt
+  const map = {};
+  snaps.docs.forEach((d) => {
+    const { city, researchAt } = d.data();
+    if (!city) return;
+    const ts = researchAt?.toMillis?.() ?? 0;
+    if (!map[city] || ts > map[city].ts) {
+      map[city] = { city, ts };
+    }
+  });
+  return Object.values(map).sort((a, b) => b.ts - a.ts).map((r) => r.city);
+}
+
+/** Remove all cached spots for a city (triggers re-research next visit) */
+export async function clearCityCache(city) {
+  city = city.toLowerCase();
+  const snaps = await getDocs(collection(db, 'citySpots', city, 'spots'));
+  if (!snaps.docs.length) return 0;
+  const batch = writeBatch(db);
+  snaps.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+  return snaps.docs.length;
+}
+
 // ---------------------------------------------------------------------------
 // City Passes (curated — manually seeded via console or seed script)
 // ---------------------------------------------------------------------------
@@ -401,4 +522,359 @@ export async function getDayPlanSpots(dayPlanId) {
 export async function getCityPass(city) {
   const snap = await getDoc(doc(db, 'cityPasses', city.toLowerCase()));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+
+// ---------------------------------------------------------------------------
+// Saved Spots (users/{uid}/savedSpots/{spotId})
+// ---------------------------------------------------------------------------
+
+/** Returns all saved spot stubs for a user */
+export async function getSavedSpots(userId) {
+  const q = query(collection(db, 'users', userId, 'savedSpots'));
+  const snaps = await getDocs(q);
+  return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+/** Save a spot to the user's collection */
+export async function saveSpot(userId, spot) {
+  if (!spot?.id) return;
+  await setDoc(doc(db, 'users', userId, 'savedSpots', spot.id), {
+    spotId:          spot.id,
+    city:            spot.city ?? null,
+    name:            spot.name ?? null,
+    hiddennessScore: spot.hiddennessScore ?? 1,
+    category:        spot.category ?? null,
+    interests:       spot.interests ?? [],
+    savedAt:         serverTimestamp(),
+  });
+}
+
+/** Remove a spot from the user's saved collection */
+export async function unsaveSpot(userId, spotId) {
+  await deleteDoc(doc(db, 'users', userId, 'savedSpots', spotId));
+}
+
+// ---------------------------------------------------------------------------
+// Spot Notes + Visited (users/{uid}/spotNotes/{spotId})
+// ---------------------------------------------------------------------------
+
+/** Upsert note/visited state for a spot */
+export async function saveSpotNote(uid, spotId, data) {
+  if (!uid || !spotId) return;
+  const ref = doc(db, 'users', uid, 'spotNotes', spotId);
+  await setDoc(ref, { ...data, updatedAt: serverTimestamp() }, { merge: true });
+}
+
+/** Get note/visited state for a single spot */
+export async function getSpotNote(uid, spotId) {
+  if (!uid || !spotId) return null;
+  const snap = await getDoc(doc(db, 'users', uid, 'spotNotes', spotId));
+  return snap.exists() ? snap.data() : null;
+}
+
+/** Bulk-load all spot notes for a user → map of { spotId: { note, visited } } */
+export async function getSpotNotes(uid) {
+  if (!uid) return {};
+  const snaps = await getDocs(collection(db, 'users', uid, 'spotNotes'));
+  const map = {};
+  snaps.docs.forEach((d) => { map[d.id] = d.data(); });
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// Trip Templates (cityTemplates/{city}/templates/{id})
+// ---------------------------------------------------------------------------
+
+/**
+ * Save the current trip's day plan as a reusable template for a city.
+ * Stores a lightweight snapshot: day plans + spot names (no personal data).
+ */
+export async function saveTripAsTemplate(city, authorId, days) {
+  if (!city || !authorId || !days.length) return null;
+
+  // Build a lightweight days array: just slot + spotName (no IDs, no PII)
+  const daySnapshots = days.map((d) => ({
+    dayNumber: d.dayNumber,
+    spots: (d.spots ?? []).map((s) => ({
+      spotId:   s.spotId ?? null,
+      spotName: s.spotName ?? s.name ?? null,
+      timeOfDay: s.timeOfDay ?? 'morning',
+    })),
+  })).filter((d) => d.spots.length > 0);
+
+  if (!daySnapshots.length) return null;
+
+  const ref = doc(collection(db, 'cityTemplates', city.toLowerCase(), 'templates'));
+  await setDoc(ref, {
+    city,
+    authorId,
+    days:      daySnapshots,
+    dayCount:  daySnapshots.length,
+    spotCount: daySnapshots.reduce((s, d) => s + d.spots.length, 0),
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+/**
+ * Fetch up to 5 community templates for a city.
+ */
+export async function getCityTemplates(city, limitN = 5) {
+  if (!city) return [];
+  try {
+    // Fetch up to 50 docs server-side to bound the read cost, then rank client-side
+    // by spotCount (avoids requiring a composite index on a rarely-queried collection).
+    const q = query(
+      collection(db, 'cityTemplates', city.toLowerCase(), 'templates'),
+      limit(50),
+    );
+    const snaps = await getDocs(q);
+    return snaps.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => (b.spotCount ?? 0) - (a.spotCount ?? 0))
+      .slice(0, limitN);
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Spot Reviews (spotReviews/{spotId}/reviews/{uid})
+// ---------------------------------------------------------------------------
+
+/**
+ * Save or update a star review for a spot.
+ * Also updates the aggregate (avgRating, count) on the parent doc via batch.
+ */
+export async function saveSpotReview(uid, spotId, rating, comment = '') {
+  if (!uid || !spotId || !rating) return;
+  const reviewRef = doc(db, 'spotReviews', spotId, 'reviews', uid);
+  const aggregateRef = doc(db, 'spotReviews', spotId);
+
+  // Write the individual review (batch: review + aggregate re-compute)
+  await setDoc(reviewRef, {
+    uid,
+    spotId,
+    rating: Math.round(rating),
+    comment: comment ?? '',
+    createdAt: serverTimestamp(),
+  }, { merge: true });
+
+  // Re-compute aggregate from all reviews
+  const allSnaps = await getDocs(collection(db, 'spotReviews', spotId, 'reviews'));
+  const ratings = allSnaps.docs.map((d) => d.data().rating ?? 0).filter(Boolean);
+  const count = ratings.length;
+  const avgRating = count > 0 ? ratings.reduce((s, r) => s + r, 0) / count : 0;
+
+  await setDoc(aggregateRef, { avgRating: Math.round(avgRating * 10) / 10, count }, { merge: true });
+}
+
+/**
+ * Get aggregate review stats for a spot: { avgRating, count }.
+ * Returns null if no reviews exist.
+ */
+export async function getSpotReviewAggregate(spotId) {
+  if (!spotId) return null;
+  const snap = await getDoc(doc(db, 'spotReviews', spotId));
+  return snap.exists() ? snap.data() : null;
+}
+
+/**
+ * Get the current user's review for a spot.
+ */
+export async function getUserSpotReview(uid, spotId) {
+  if (!uid || !spotId) return null;
+  const snap = await getDoc(doc(db, 'spotReviews', spotId, 'reviews', uid));
+  return snap.exists() ? snap.data() : null;
+}
+
+/**
+ * Batch-load review aggregates for multiple spotIds.
+ * Returns a map of { spotId: { avgRating, count } }
+ */
+export async function getSpotReviewAggregates(spotIds) {
+  if (!spotIds.length) return {};
+  const snaps = await Promise.all(
+    spotIds.map((id) => getDoc(doc(db, 'spotReviews', id)))
+  );
+  const map = {};
+  snaps.forEach((snap, i) => {
+    if (snap.exists()) map[spotIds[i]] = snap.data();
+  });
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// "Trips like yours" — public trips that visit the same cities
+// ---------------------------------------------------------------------------
+
+/**
+ * Find public trips (by other users) that include at least one of the given cities.
+ * Strategy:
+ *  1. Query destinations where city is in the user's cities.
+ *  2. Collect the unique tripIds.
+ *  3. Fetch those trip docs and keep the ones that are isPublic: true
+ *     and were not created by the current user.
+ * Returns an array of { id, name, destinations: [{city, countryCode}], tripId }
+ */
+export async function getPublicTripsLike(userCities, currentUserId, limitN = 8) {
+  if (!userCities.length) return [];
+  const cities = userCities.slice(0, 10); // 'in' max 30; practical cap 10
+
+  try {
+    const destsSnap = await getDocs(
+      query(collection(db, 'destinations'), where('city', 'in', cities))
+    );
+    // Unique tripIds, excluding trips with no city overlap (already filtered by query)
+    const tripIds = [...new Set(destsSnap.docs.map((d) => d.data().tripId))].filter(Boolean).slice(0, 30);
+    if (!tripIds.length) return [];
+
+    const tripDocs = await Promise.all(tripIds.map((id) => getDoc(doc(db, 'trips', id))));
+    const publicTrips = tripDocs.filter(
+      (d) => d.exists() && d.data().isPublic === true && d.data().userId !== currentUserId
+    );
+
+    // For each public trip, we need its destinations (cities + country codes)
+    // Destinations are publicly readable — group by tripId from the destsSnap
+    const destsByTripId = {};
+    destsSnap.docs.forEach((d) => {
+      const { tripId, city, countryCode, sortOrder } = d.data();
+      if (!destsByTripId[tripId]) destsByTripId[tripId] = [];
+      destsByTripId[tripId].push({ city, countryCode, sortOrder: sortOrder ?? 0 });
+    });
+
+    return publicTrips.slice(0, limitN).map((d) => ({
+      id:          d.id,
+      name:        d.data().name ?? null,
+      isMultiCity: d.data().isMultiCity ?? false,
+      destinations: (destsByTripId[d.id] ?? [])
+        .sort((a, b) => a.sortOrder - b.sortOrder),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Discover — spot popularity (how many travellers added a city's spots to day plans)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a map of { spotId: count } for all spots saved to any day plan
+ * for a given city.  dayPlanSpots are publicly readable; spotCity is stored
+ * on write in addSpotToDayPlan.
+ */
+export async function getSpotSaveCounts(city) {
+  if (!city) return {};
+  const q = query(
+    collection(db, 'dayPlanSpots'),
+    where('spotCity', '==', city),
+  );
+  const snaps = await getDocs(q);
+  const counts = {};
+  snaps.docs.forEach((d) => {
+    const { spotId } = d.data();
+    if (spotId) counts[spotId] = (counts[spotId] ?? 0) + 1;
+  });
+  return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Public sharing
+// ---------------------------------------------------------------------------
+
+/**
+ * Mark a trip (and all its destinations + day plans) as publicly readable.
+ * Must be called by the trip owner.
+ * userId is required — Firestore security rules reject queries without it.
+ */
+export async function setTripPublic(tripId, userId) {
+  const batch = writeBatch(db);
+
+  // Mark the trip itself
+  batch.update(doc(db, 'trips', tripId), { isPublic: true });
+
+  // Mark all destinations — must include userId filter to satisfy security rules
+  const destsSnap = await getDocs(
+    query(
+      collection(db, 'destinations'),
+      where('tripId', '==', tripId),
+      where('userId', '==', userId),
+    )
+  );
+  destsSnap.docs.forEach((d) => batch.update(d.ref, { isPublic: true }));
+
+  // Mark all day plans — must include userId filter to satisfy security rules
+  const plansSnap = await getDocs(
+    query(
+      collection(db, 'dayPlans'),
+      where('tripId', '==', tripId),
+      where('userId', '==', userId),
+    )
+  );
+  plansSnap.docs.forEach((d) => batch.update(d.ref, { isPublic: true }));
+
+  await batch.commit();
+}
+
+/**
+ * Fetch a public trip by ID (no auth required — trip must have isPublic: true).
+ * Returns null if the trip doesn't exist or isn't public.
+ */
+export async function getTripPublic(tripId) {
+  const snap = await getDoc(doc(db, 'trips', tripId));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  if (!data.isPublic) return null;
+
+  // Destinations are now publicly readable — no userId/isPublic filter needed.
+  // Sort client-side to avoid requiring a composite index.
+  const destsSnap = await getDocs(
+    query(collection(db, 'destinations'), where('tripId', '==', tripId))
+  );
+  const destinations = destsSnap.docs
+    .map((d) => ({
+      id: d.id,
+      ...d.data(),
+      startDate: toISO(d.data().startDate),
+      endDate:   toISO(d.data().endDate),
+    }))
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+
+  return {
+    id:          snap.id,
+    name:        data.name ?? null,
+    isMultiCity: data.isMultiCity ?? false,
+    isPublic:    true,
+    destinations,
+  };
+}
+
+/**
+ * Fetch public day plans for a destination (no auth required).
+ * Returns [] if none exist or destination is not public.
+ */
+export async function getDayPlansPublic(destinationId) {
+  // dayPlans are now publicly readable — sort client-side to avoid composite index.
+  const q = query(
+    collection(db, 'dayPlans'),
+    where('destinationId', '==', destinationId),
+  );
+  const snaps = await getDocs(q);
+  return snaps.docs
+    .map((d) => ({ id: d.id, ...d.data(), planDate: toISO(d.data().planDate) }))
+    .sort((a, b) => (a.dayNumber ?? 0) - (b.dayNumber ?? 0));
+}
+
+/**
+ * Fetch spots for a day plan (publicly accessible — no PII).
+ */
+export async function getDayPlanSpotsPublic(dayPlanId) {
+  const q = query(
+    collection(db, 'dayPlanSpots'),
+    where('dayPlanId', '==', dayPlanId),
+    orderBy('sortOrder', 'asc'),
+  );
+  const snaps = await getDocs(q);
+  return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
