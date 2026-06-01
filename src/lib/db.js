@@ -10,6 +10,7 @@
 //   dayPlans/{planId}              — one per trip day, links to destinationId
 //   dayPlanSpots/{id}              — spots in a day plan
 //   cityPasses/{city}              — curated day-pass data (seeded manually)
+//   cityEvents/{city}/events/{id} — recurring events (Glasgow-only for now)
 
 import {
   collection,
@@ -548,6 +549,67 @@ export async function cacheDeepSpots(city, category, spots) {
     }
     await batch.commit();
   }
+}
+
+// ---------------------------------------------------------------------------
+// City Events (recurring events, Glasgow-gated) — cityEvents/{city}/events/{id}
+// ---------------------------------------------------------------------------
+
+/** Cities for which events research is enabled */
+export const EVENTS_ENABLED_CITIES = ['Glasgow'];
+export const isEventsCity = (city) =>
+  EVENTS_ENABLED_CITIES.some((c) => c.toLowerCase() === (city ?? '').toLowerCase());
+
+export async function getCityEvents(city) {
+  const snap = await getDocs(collection(db, 'cityEvents', city.toLowerCase(), 'events'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function cacheCityEvents(city, events) {
+  const cid    = city.toLowerCase();
+  const colRef = collection(db, 'cityEvents', cid, 'events');
+  const BATCH  = 500;
+  for (let i = 0; i < events.length; i += BATCH) {
+    const batch = writeBatch(db);
+    events.slice(i, i + BATCH).forEach((ev) => {
+      batch.set(doc(colRef), { ...ev, city, cachedAt: new Date().toISOString() });
+    });
+    if (i === 0) {
+      batch.set(doc(db, 'cityEvents', cid), { city, count: events.length, cachedAt: new Date().toISOString() });
+    }
+    await batch.commit();
+  }
+}
+
+/**
+ * Add a recurring event to a day plan slot.
+ * Events store all data inline (no spotId reference) so the planner can
+ * display them without a second lookup into citySpots.
+ */
+export async function addEventToDayPlan(dayPlanId, event, city, timeOfDay) {
+  return addDoc(collection(db, 'dayPlanSpots'), {
+    dayPlanId,
+    spotId:               null,       // events have no citySpots entry
+    isEvent:              true,
+    name:                 event.name,
+    venue:                event.venue ?? null,
+    description:          event.description ?? null,
+    category:             event.category ?? 'other',
+    recurrence:           event.recurrence ?? 'weekly',
+    day:                  event.day ?? null,
+    time:                 event.time ?? null,
+    confidence:           event.confidence ?? 0.5,
+    sourceHint:           event.sourceHint ?? null,
+    hiddennessScore:      event.hiddennessScore ?? 5,
+    entryPrice:           event.entryPrice ?? 0,
+    visitDurationMinutes: event.visitDurationMinutes ?? null,
+    lat:                  event.lat ?? null,
+    lng:                  event.lng ?? null,
+    city,
+    timeOfDay,
+    sortOrder:            Date.now(),
+    createdAt:            serverTimestamp(),
+  });
 }
 
 // ---------------------------------------------------------------------------

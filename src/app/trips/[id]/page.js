@@ -9,7 +9,8 @@ import { track } from '@/lib/analytics';
 import { useDestination } from '@/hooks/useDestination';
 import { useDayPlanner } from '@/hooks/useDayPlanner';
 import { useSavedSpots } from '@/hooks/useSavedSpots';
-import { runResearch, runDeepResearch } from '@/lib/functions';
+import { runResearch, runDeepResearch, runEventsResearch } from '@/lib/functions';
+import { isEventsCity } from '@/lib/db';
 import SpotCard from '@/components/SpotCard';
 import SpotDrawer from '@/components/SpotDrawer';
 import CountdownBadge from '@/components/CountdownBadge';
@@ -203,6 +204,9 @@ export default function TripDetailPage() {
   const [scoreDropdownOpen,    setScoreDropdownOpen]    = useState(false);
   const [starredOnly,          setStarredOnly]          = useState(false);
 
+  // Recurring events (Phase 3 — Glasgow only)
+  const [cityEvents,       setCityEvents]        = useState([]);
+
   // Deep browse lens (Phase 2B)
   const [deepInterestId,   setDeepInterestId]   = useState(null);   // null = curated mode
   const [deepSpots,        setDeepSpots]        = useState([]);
@@ -244,6 +248,16 @@ export default function TripDetailPage() {
     if (activeTab !== 'Pass' || !selectedDest?.city) return;
     getCityPass(selectedDest.city).then(setCityPass).catch(() => setCityPass(null));
   }, [activeTab, selectedDest?.city]);
+
+  /* ── Load recurring events when Days tab opens (Glasgow only) ───────────── */
+  useEffect(() => {
+    if (activeTab !== 'Days' || !selectedDest?.city) return;
+    if (!isEventsCity(selectedDest.city)) return;
+    runEventsResearch(selectedDest.city, false, {
+      onEvent:    (ev) => setCityEvents((prev) => [...prev, ev]),
+      onSummary:  (s)  => { if (!s.fromCache) toast.info?.(`${s.geocoded} recurring events loaded for ${selectedDest.city}`); },
+    }).catch(() => {});
+  }, [activeTab, selectedDest?.city]); // eslint-disable-line
 
   /* ── Load spot notes ─────────────────────────────────────────────────────── */
   useEffect(() => {
@@ -448,6 +462,7 @@ export default function TripDetailPage() {
     setDeepSpots([]);
     setDeepStreaming([]);
     setDeepError(null);
+    setCityEvents([]);
   }, [selectedDest?.id]);
 
   /* ── Derived ────────────────────────────────────────────────────────────── */
@@ -1208,6 +1223,7 @@ export default function TripDetailPage() {
               onRefetch={refetchDays}
               onSwitchToResearch={() => setActiveTab('Research')}
               onToggleSave={toggleSave}
+              events={cityEvents}
               toast={toast}
             />
           )}

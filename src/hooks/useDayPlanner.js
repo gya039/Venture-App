@@ -40,6 +40,10 @@ export function useDayPlanner(destId, city) {
         const dpSpots = await getDayPlanSpots(plan.id);
         const spots = dpSpots
           .map(dps => {
+            // Events store all their data inline (spotId is null)
+            if (dps.isEvent) {
+              return { ...dps, dayPlanSpotId: dps.id };
+            }
             const spot = spotMap[dps.spotId];
             if (!spot) return null;
             return { ...spot, dayPlanSpotId: dps.id, timeOfDay: dps.timeOfDay, sortOrder: dps.sortOrder };

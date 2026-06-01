@@ -36,6 +36,7 @@ import { getHiddennessLevel } from '@/constants/hiddenness';
 import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
 import {
   addSpotToDayPlan,
+  addEventToDayPlan,
   removeDayPlanSpot,
   updateDayPlanSpotSlot,
   saveTripAsTemplate,
@@ -334,6 +335,44 @@ function PlacedSpotCard({ spot, onRemove }) {
           ×
         </button>
       </div>
+
+      {/* ── Event uncertainty notice — always shown for events ─────────── */}
+      {spot.isEvent && (
+        <div style={{
+          marginTop: 6, padding: '5px 10px',
+          borderRadius: 7,
+          background: spot.confidence < 0.6
+            ? 'color-mix(in oklch, var(--error) 7%, transparent)'
+            : 'color-mix(in oklch, var(--t3) 8%, transparent)',
+          border: `1px solid ${spot.confidence < 0.6
+            ? 'color-mix(in oklch, var(--error) 22%, transparent)'
+            : 'color-mix(in oklch, var(--t3) 22%, transparent)'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
+        }}>
+          <span style={{
+            fontSize: '0.6rem', fontFamily: 'var(--mono)', letterSpacing: '0.04em',
+            color: spot.confidence < 0.6 ? 'var(--error)' : 'var(--t3)',
+            fontWeight: 700,
+          }}>
+            {spot.confidence < 0.6
+              ? '⚠⚠ Uncertain — verify before you go'
+              : '⚠ Always double-check times'}
+          </span>
+          <a
+            href={`https://www.google.com/search?q=${encodeURIComponent((spot.name ?? '') + ' ' + (spot.venue ?? '') + ' Glasgow')}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              fontSize: '0.6rem', fontFamily: 'var(--mono)', fontWeight: 700,
+              color: spot.confidence < 0.6 ? 'var(--error)' : 'var(--t3)',
+              textDecoration: 'none', flexShrink: 0,
+            }}
+          >
+            Verify →
+          </a>
+        </div>
+      )}
     </div>
   );
 }
@@ -465,8 +504,113 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
   );
 }
 
+/* ── EventSuggestionCard ──────────────────────────────────────────────────── */
+function EventSuggestionCard({ event, onAdd }) {
+  const [adding, setAdding] = useState(false);
+  const [selSlot, setSelSlot] = useState(() => {
+    // Auto-pick slot from event time
+    if (!event.time) return 'morning';
+    const h = parseInt(event.time.split(':')[0], 10);
+    if (h >= 18) return 'evening';
+    if (h >= 12) return 'afternoon';
+    return 'morning';
+  });
+
+  const isLowConf = (event.confidence ?? 1) < 0.6;
+
+  return (
+    <div style={{
+      marginBottom: 8, padding: '10px 12px',
+      borderRadius: 10,
+      border: `1px solid ${isLowConf ? 'color-mix(in oklch, var(--error) 20%, var(--line))' : 'color-mix(in oklch, var(--terracotta) 30%, var(--line))'}`,
+      background: isLowConf ? 'color-mix(in oklch, var(--error) 4%, var(--card))' : 'color-mix(in oklch, var(--terracotta) 4%, var(--card))',
+    }}>
+      {/* Header row */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 4 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--ink)', lineHeight: 1.25 }}>
+            {event.name}
+          </div>
+          {event.venue && (
+            <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginTop: 2 }}>
+              {event.venue}{event.neighbourhood ? ` · ${event.neighbourhood}` : ''}
+            </div>
+          )}
+        </div>
+        <div style={{ flexShrink: 0, textAlign: 'right' }}>
+          <span style={{
+            display: 'inline-block', padding: '1px 7px', borderRadius: 8,
+            background: 'color-mix(in oklch, var(--terracotta) 12%, transparent)',
+            color: 'var(--terracotta)', fontSize: '0.6rem', fontWeight: 700,
+            fontFamily: 'var(--mono)', letterSpacing: '0.05em', textTransform: 'uppercase',
+          }}>
+            {event.recurrence} · {event.day?.slice(0, 3)}
+          </span>
+          {event.time && (
+            <div style={{ fontSize: '0.65rem', color: 'var(--muted)', marginTop: 2, fontFamily: 'var(--mono)' }}>
+              {event.time}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Uncertainty notice */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        marginBottom: 8, padding: '4px 8px', borderRadius: 6,
+        background: isLowConf ? 'color-mix(in oklch, var(--error) 8%, transparent)' : 'color-mix(in oklch, var(--t3) 6%, transparent)',
+      }}>
+        <span style={{ fontSize: '0.6rem', fontFamily: 'var(--mono)', fontWeight: 700, color: isLowConf ? 'var(--error)' : 'var(--t3)' }}>
+          {isLowConf ? '⚠⚠ Uncertain — verify before you go' : '⚠ Always double-check times before you go'}
+        </span>
+        <a
+          href={`https://www.google.com/search?q=${encodeURIComponent((event.name ?? '') + ' Glasgow')}`}
+          target="_blank" rel="noopener noreferrer"
+          style={{ fontSize: '0.6rem', fontFamily: 'var(--mono)', fontWeight: 700, color: isLowConf ? 'var(--error)' : 'var(--t3)', textDecoration: 'none', flexShrink: 0, marginLeft: 6 }}
+        >
+          Verify →
+        </a>
+      </div>
+
+      {/* Slot picker + Add button */}
+      <div style={{ display: 'flex', gap: 5, alignItems: 'center' }}>
+        {SLOTS.map(slot => (
+          <button
+            key={slot}
+            type="button"
+            onClick={() => setSelSlot(slot)}
+            style={{
+              padding: '4px 8px', borderRadius: 6, fontSize: '0.67rem', fontWeight: 500,
+              border: `1px solid ${selSlot === slot ? 'var(--terracotta)' : 'var(--line)'}`,
+              background: selSlot === slot ? 'color-mix(in oklch, var(--terracotta) 10%, transparent)' : 'transparent',
+              color: selSlot === slot ? 'var(--terracotta)' : 'var(--muted)',
+              cursor: 'pointer', transition: 'all 0.1s',
+            }}
+          >
+            {selSlot === slot && (slot === 'morning' ? '🌅' : slot === 'afternoon' ? '☀️' : '🌙')} {SLOT_LABEL[slot]}
+          </button>
+        ))}
+        <button
+          type="button"
+          disabled={adding}
+          onClick={async () => { setAdding(true); try { await onAdd(selSlot); } finally { setAdding(false); } }}
+          style={{
+            marginLeft: 'auto', padding: '4px 12px', borderRadius: 6,
+            background: 'var(--terracotta)', color: '#fff',
+            border: 'none', fontSize: '0.7rem', fontWeight: 700,
+            cursor: adding ? 'default' : 'pointer', opacity: adding ? 0.6 : 1,
+            flexShrink: 0,
+          }}
+        >
+          {adding ? '…' : '+ Add'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent }) {
   const [open, setOpen] = useState(true);
 
   const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
@@ -535,6 +679,34 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere })
             />
           ))}
 
+          {/* ── Recurring events on this day ──────────────────────────── */}
+          {(() => {
+            const dayOfWeek = day.planDate
+              ? new Date(day.planDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' })
+              : null;
+            const dayEvents = dayOfWeek
+              ? events.filter((e) => e.day === dayOfWeek && !e.coordsMissing)
+              : [];
+            if (!dayEvents.length) return null;
+            return (
+              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
+                <div style={{
+                  fontSize: '0.6rem', fontFamily: 'var(--mono)', letterSpacing: '0.08em',
+                  textTransform: 'uppercase', color: 'var(--terracotta)', marginBottom: 8, fontWeight: 700,
+                }}>
+                  🎪 Recurring events on this {dayOfWeek}
+                </div>
+                {dayEvents.map((event, i) => (
+                  <EventSuggestionCard
+                    key={event.id ?? i}
+                    event={event}
+                    onAdd={(slot) => onAddEvent(day.id, event, slot)}
+                  />
+                ))}
+              </div>
+            );
+          })()}
+
           {/* Day summary footer */}
           {totalSpots > 0 && (
             <div style={{
@@ -585,6 +757,7 @@ export default function DaysBuilder({
   onSwitchToResearch,
   onToggleSave,
   toast,
+  events = [],       // recurring events (Glasgow only)
 }) {
   /* ── Slot state (mirrors days prop, optimistically updated by DnD) ───────── */
   const [allSlots_, setAllSlots_] = useState(() => initSlots(days));
@@ -880,6 +1053,18 @@ export default function DaysBuilder({
   function handleSelectForPlace(spot) {
     setPlacingSpot(spot);
     if (spot !== null && isMobile) setMobilePanel('planner');
+  }
+
+  /* ── Add recurring event to a day slot ──────────────────────────────────── */
+  async function handleAddEvent(dayId, event, slot) {
+    try {
+      await addEventToDayPlan(dayId, event, city, slot);
+      onRefetch();
+      toast?.success?.(`${event.name} added to plan`);
+    } catch (err) {
+      console.error('[DaysBuilder] addEventToDayPlan:', err);
+      toast?.error?.('Failed to add event');
+    }
   }
 
   /* ── Bottom sheet: open (auto-expands first day) ─────────────────────────── */
@@ -1308,6 +1493,8 @@ export default function DaysBuilder({
                 isTouch={isTouch}
                 placingSpot={placingSpot}
                 onPlaceHere={handlePlaceSpot}
+                events={events}
+                onAddEvent={handleAddEvent}
               />
             ))}
 

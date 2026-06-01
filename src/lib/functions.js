@@ -2,7 +2,7 @@
 // Research helper — calls the Next.js /api/research SSE route,
 // streams spots one-by-one via onSpot callback, caches to Firestore on completion.
 
-import { cacheSpots, markResearchDone, getCachedSpots, getCachedDeepSpots, cacheDeepSpots } from './db';
+import { cacheSpots, markResearchDone, getCachedSpots, getCachedDeepSpots, cacheDeepSpots, getCityEvents, cacheCityEvents } from './db';
 
 /**
  * Run AI research for a city with streaming callbacks.
@@ -187,4 +187,73 @@ export async function runDeepResearch(
   );
 
   return { spots: allSpots, cached: false };
+}
+
+/**
+ * Recurring-events research for a single city (Glasgow-gated).
+ * Checks the events cache first; hits the AI only on a miss.
+ */
+export async function runEventsResearch(
+  city,
+  force = false,
+  { onEvent, onStatus, onSummary } = {},
+) {
+  // 1. Check events cache
+  if (!force) {
+    const cached = await getCityEvents(city);
+    if (cached.length > 0) {
+      cached.forEach((e) => onEvent?.(e));
+      onSummary?.({ geocoded: cached.length, city, mode: 'events', fromCache: true });
+      return { events: cached, cached: true };
+    }
+  }
+
+  onStatus?.(`Researching recurring events in ${city}…`);
+
+  const res = await fetch('/api/research', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ city, mode: 'events' }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Events research failed (${res.status})`);
+  }
+
+  const reader    = res.body.getReader();
+  const decoder   = new TextDecoder();
+  const allEvents = [];
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      let ev = 'message', data = '';
+      for (const line of part.split('\n')) {
+        if (line.startsWith('event: '))     ev   = line.slice(7).trim();
+        else if (line.startsWith('data: ')) data = line.slice(6).trim();
+      }
+      if (!data) continue;
+      let payload;
+      try { payload = JSON.parse(data); } catch { continue; }
+      if      (ev === 'status')  onStatus?.(payload.message);
+      else if (ev === 'spot')    { allEvents.push(payload); onEvent?.(payload); }
+      else if (ev === 'summary') onSummary?.(payload);
+      else if (ev === 'error')   throw new Error(payload.message ?? 'Events research failed');
+    }
+  }
+
+  if (!allEvents.length) throw new Error('AI returned no events. Please try again.');
+
+  await cacheCityEvents(city, allEvents).catch((err) =>
+    console.error('[runEventsResearch] cache error:', err)
+  );
+
+  return { events: allEvents, cached: false };
 }

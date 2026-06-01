@@ -77,6 +77,69 @@ Use real, accurate addresses including street name and postcode where known.
 IMPORTANT: Your response must be complete, valid, parseable JSON. If you are approaching your output limit, immediately stop adding new spots and close the JSON array cleanly with \`]}\`. A truncated response wastes everything that came before it.`;
 
 // ---------------------------------------------------------------------------
+// Events mode — recurring events for Glasgow (Phase 3, city-gated)
+// ---------------------------------------------------------------------------
+
+const EVENTS_ENABLED_CITIES = ['Glasgow']; // expand only after Glasgow proves reliable
+
+/** Reuses the main JSON_SCHEMA key ("spots") so the geocoding pipeline is identical */
+const EVENTS_JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanation, no code fences:
+{
+  "spots": [
+    {
+      "name": "string — event name",
+      "venue": "string — venue where it takes place",
+      "description": "1–2 sentences about what the event is",
+      "recurrence": "weekly | monthly",
+      "day": "Monday | Tuesday | Wednesday | Thursday | Friday | Saturday | Sunday",
+      "time": "HH:MM–HH:MM in 24-hour format (approximate is fine)",
+      "category": "market | music | nightlife | art | food | sport | community | other",
+      "confidence": <float 0.0–1.0>,
+      "sourceHint": "brief clue about how you know this (e.g. 'well-known Glasgow tradition', 'listed on venue website')",
+      "address": "venue street address — used for geocoding, be specific",
+      "neighbourhood": "district or area name",
+      "isEvent": true,
+      "hiddennessScore": <integer 1–10>,
+      "interests": ["markets","music","food","art","nightlife","outdoor","offbeat","streets"],
+      "entryPrice": <number in GBP; 0 if free; null if unknown>,
+      "visitDurationMinutes": <typical duration in minutes>
+    }
+  ]
+}
+
+Confidence scoring:
+0.8–1.0: Well-established, almost certainly still running, specific details confirmed
+0.5–0.7: Probably still running but less certain about current schedule
+0.2–0.4: You know this existed but uncertain if it's still running
+
+IMPORTANT: Return complete, valid JSON. Close the array cleanly if approaching output limit.`;
+
+const buildEventsPrompt = (city) => `You are a local events researcher for ${city}.
+
+Research RECURRING events in ${city} — events that happen weekly or monthly on a fixed schedule.
+
+Cover:
+- Regular markets (farmer's markets, vintage fairs, car boot sales, antique markets)
+- Weekly music nights, jazz sessions, open mics, folk sessions at specific pubs or venues
+- Regular club nights, dance events, DJ nights
+- Monthly art openings, gallery nights, creative events
+- Regular sports meetups, parkruns, cycling groups
+- Weekly food pop-ups, street food markets, supper clubs
+- Community gatherings, quiz nights, film screenings with fixed schedules
+- Any recurring local event that a visitor spending a week there could attend
+
+Rules:
+- Only genuinely RECURRING events (weekly or monthly) — no one-offs or seasonal festivals
+- Be HONEST about confidence — if you're not sure the event still runs, score it lower
+- sourceHint: a brief clue about the source (e.g. "Barras official site", "long-running Glasgow tradition", "listed on The Glad Cafe calendar")
+- address: the venue address — be specific, this is used for geocoding
+- hiddennessScore: how local the event is (1 = tourist-facing, 10 = purely locals know it)
+- DO NOT invent events. Every entry must be a real recurring event you genuinely know about.
+- Return every event you know — no artificial cap.
+
+${EVENTS_JSON_SCHEMA}`.trim();
+
+// ---------------------------------------------------------------------------
 // Deep-mode prompt — comprehensive single-category directory
 // ---------------------------------------------------------------------------
 
@@ -536,8 +599,14 @@ export async function POST(request) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Resilient send — silently ignores writes to an already-closed controller
+      // (can happen when client disconnects mid-stream or after early return + finally)
       const send = (event, data) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch (e) {
+          if (e?.code !== 'ERR_INVALID_STATE') throw e;
+        }
       };
 
       try {
@@ -585,6 +654,57 @@ export async function POST(request) {
             send('done', { total: sent });
           }
           return; // don't fall through to curated mode
+        }
+
+        // ══ Events mode: recurring events for one city (Glasgow-gated) ══════
+        if (mode === 'events') {
+          if (!EVENTS_ENABLED_CITIES.some(c => c.toLowerCase() === city.toLowerCase())) {
+            send('error', { message: `Events research is currently only available for: ${EVENTS_ENABLED_CITIES.join(', ')}` });
+            return;
+          }
+
+          send('status', { message: `Researching recurring events in ${city}…` });
+          const rawEvents = await callOpenAI(buildEventsPrompt(city));
+          console.log(`[research/events] ${city}: AI returned ${rawEvents.length} events`);
+
+          const cleanEvents = rawEvents.map(({ lat, lng, latitude, longitude, ...rest }) => ({
+            ...rest,
+            isEvent: true, // always tag as event regardless of what AI returned
+          }));
+          if (!cleanEvents.length) throw new Error('AI returned no events. Please try again.');
+
+          send('status', { message: `${cleanEvents.length} events found — geocoding venues…` });
+          send('total',  { count: cleanEvents.length });
+
+          const token      = process.env.MAPBOX_SERVER_TOKEN ?? process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+          const cityCenter = token ? await getCityCenter(city, token) : null;
+          let sent = 0, skipped = 0;
+          const evQueue = cleanEvents.slice();
+
+          const evWorkers = Array.from(
+            { length: Math.min(5, cleanEvents.length) },
+            async () => {
+              while (evQueue.length > 0) {
+                const ev = evQueue.shift();
+                if (!ev) continue;
+                const geocoded = (token && cityCenter)
+                  ? await geocodeSpot(ev, city, cityCenter, token)
+                  : { ...ev, coordsMissing: true };
+                if (geocoded.coordsMissing) { skipped++; }
+                else { send('spot', geocoded); sent++; }
+              }
+            }
+          );
+          await Promise.all(evWorkers);
+
+          if (sent === 0) {
+            send('error', { message: `Geocoding failed for all events in ${city}.` });
+          } else {
+            console.log(`[research/events] ${city}: sent=${sent} skipped=${skipped}`);
+            send('summary', { generated: rawEvents.length, geocoded: sent, dropped: skipped, city, mode: 'events' });
+            send('done', { total: sent });
+          }
+          return;
         }
 
         // ══ Curated mode: 6-pass research ════════════════════════════════════
@@ -702,9 +822,10 @@ export async function POST(request) {
       } catch (err) {
         console.error('[/api/research] error:', err);
         send('error', { message: err.message ?? 'Research failed' });
+      } finally {
+        // Always close — safe to call even if already closed (client disconnected etc.)
+        try { controller.close(); } catch {}
       }
-
-      controller.close();
     },
   });
 
