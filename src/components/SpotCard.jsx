@@ -131,6 +131,11 @@ export default function SpotCard({
           )}
         </div>
 
+        {/* "Why it's hidden" teaser — single truncated line of editorial text */}
+        {spot?.description && (
+          <div className="sc-why">{spot.description}</div>
+        )}
+
         {/* Closure alert */}
         {spot?.closureStatus && spot.closureStatus !== 'open' && (
           <div style={{

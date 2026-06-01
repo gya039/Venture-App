@@ -180,6 +180,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 @keyframes justfound  { 0%,70%{opacity:1} 100%{opacity:0} }
 @keyframes chipin     { from{opacity:0;transform:translate(-50%,calc(-100% - 34px))} }
 @keyframes sheetup    { from{transform:translate(-50%,100%)} }
+@keyframes placing-pulse {
+  0%,100% { box-shadow: 0 0 0 0   color-mix(in oklch, var(--terracotta) 45%, transparent); }
+  50%     { box-shadow: 0 0 0 6px color-mix(in oklch, var(--terracotta)  0%, transparent); }
+}
 
 /* ── Skeleton / shimmer ─────────────────────────────────────── */
 .skeleton {
@@ -404,8 +408,11 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .spotcard {
   --sc: var(--ink);
   display: flex; align-items: center; gap: 14px;
-  padding: 13px 14px;
-  border: 1px solid var(--line); border-radius: 15px;
+  padding: 13px 14px 13px 12px;
+  /* C3: left accent bar in tier colour; other three sides stay quiet */
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--sc);
+  border-radius: 15px;
   background: var(--card); cursor: pointer;
   transition: transform .16s, box-shadow .16s, border-color .16s;
   position: relative; box-shadow: var(--shadow-sm);
@@ -420,6 +427,8 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .spotcard .sc-name { font-family: var(--serif); font-weight: 500; font-size: 18px; letter-spacing: -0.01em; line-height: 1.15; margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spotcard .sc-tier { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--sc); }
 .spotcard .sc-saved { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-left: 8px; font-style: normal; }
+/* C2: "why it's hidden" editorial teaser */
+.spotcard .sc-why  { font-size: 11px; color: var(--muted); margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; font-style: normal; }
 .spotcard .sc-acts  { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 .spotcard .sc-price { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
 .spotcard .sc-price.free { color: var(--olive); font-weight: 700; }

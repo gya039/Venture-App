@@ -83,7 +83,7 @@ export default function NewTripPage() {
         {/* ── Header ── */}
         <div className="nt-eyebrow">Plan a new trip</div>
         <h1>Where are you <em>going?</em></h1>
-        <p className="nt-sub">Tell us the city and dates — we'll research ~20 hidden gems and build your day plan.</p>
+        <p className="nt-sub">Tell us the city and dates — we'll research dozens of hidden gems and build your day plan.</p>
 
         <form onSubmit={handleSubmit}>
 

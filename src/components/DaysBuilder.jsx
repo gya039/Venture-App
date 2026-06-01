@@ -49,6 +49,39 @@ const SLOTS      = ['morning', 'afternoon', 'evening'];
 const SLOT_LABEL = { morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening' };
 const SLOT_COLOR = { morning: '#f59e0b', afternoon: '#fb923c', evening: '#b45309' };
 
+/* ── Category normalisation — collapses duplicate/mis-cased taxonomy ─────── */
+const CATEGORY_ALIASES = {
+  'museum': 'Museum', 'museums': 'Museum',
+  'art': 'Art', 'art gallery': 'Art', 'gallery': 'Art', 'galleries': 'Art',
+  'park': 'Park', 'park-green-space': 'Park', 'parks': 'Park', 'green space': 'Park',
+  'garden': 'Garden', 'gardens': 'Garden',
+  'restaurant': 'Restaurant', 'restaurants': 'Restaurant',
+  'cafe': 'Café', 'café': 'Café', 'cafes': 'Café', 'cafés': 'Café',
+  'coffee': 'Café', 'coffee shop': 'Café',
+  'bar': 'Bar', 'bars': 'Bar',
+  'street art': 'Street Art',
+  'architecture': 'Architecture',
+  'market': 'Market', 'markets': 'Market',
+  'shop': 'Shop', 'shopping': 'Shop',
+  'viewpoint': 'Viewpoint', 'vista': 'Viewpoint',
+  'neighbourhood': 'Neighbourhood', 'neighborhood': 'Neighbourhood',
+  'beach': 'Beach',
+  'historic site': 'Historic Site', 'historic': 'Historic Site',
+  'landmark': 'Landmark', 'monument': 'Landmark',
+  'street food': 'Street Food',
+  'nature': 'Nature',
+  'temple': 'Temple', 'church': 'Church', 'cathedral': 'Cathedral',
+  'nightlife': 'Nightlife',
+  'cultural': 'Cultural', 'cultural site': 'Cultural',
+  'theatre': 'Theatre', 'theater': 'Theatre',
+};
+function normalizeCategory(raw) {
+  if (!raw) return '';
+  const key = raw.toLowerCase().trim().replace(/_/g, ' ');
+  return CATEGORY_ALIASES[key]
+    ?? key.split(/[\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 function initSlots(days) {
   const result = {};
@@ -95,37 +128,61 @@ function GripIcon() {
   );
 }
 
-/* ── PickerSpot (draggable picker card) ────────────────────────────────────── */
-function PickerSpot({ spot, isAdded, onAdd }) {
+/* ── PickerSpot (draggable on pointer · tap-to-select on touch) ────────────── */
+function PickerSpot({ spot, isAdded, onAdd, isTouch, placing, onSelectForPlace }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `pick__${spot.id}`,
     data: { type: 'picker', spot },
+    disabled: isTouch, // pointer-sensor drag disabled on coarse-pointer devices
   });
   const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+
+  function handleCardClick(e) {
+    if (!isTouch || isAdded) return;
+    e.stopPropagation(); // don't bubble to root cancel handler
+    onSelectForPlace(placing ? null : spot);
+  }
 
   return (
     <div
       ref={setNodeRef}
       {...attributes}
+      onClick={handleCardClick}
       style={{
         display: 'flex', alignItems: 'flex-start', gap: 9,
         padding: '10px 10px 10px 8px', borderRadius: 9, marginBottom: 5,
-        border: `1px solid ${isAdded ? 'var(--line)' : level.color + '30'}`,
-        background: 'var(--card)',
+        border: `1px solid ${placing ? 'var(--terracotta)' : isAdded ? 'var(--line)' : level.color + '30'}`,
+        background: placing
+          ? 'color-mix(in oklch, var(--terracotta) 9%, var(--card))'
+          : 'var(--card)',
         opacity: isDragging ? 0.3 : isAdded ? 0.5 : 1,
-        userSelect: 'none', transition: 'opacity 0.15s',
+        userSelect: 'none',
+        transition: 'opacity 0.15s, border-color 0.15s, background 0.15s',
         '--sc': `var(${level.cssVar})`,
+        cursor: isTouch && !isAdded ? 'pointer' : 'default',
+        animation: placing ? 'placing-pulse 1.4s ease-in-out infinite' : 'none',
       }}
     >
-      {/* Drag grip — more visible */}
-      <div
-        {...listeners}
-        style={{ flexShrink: 0, paddingTop: 2, color: 'var(--muted)', cursor: 'grab', touchAction: 'none', opacity: 0.65 }}
-      >
-        <GripIcon />
-      </div>
+      {/* Grip (pointer) · select indicator (touch) */}
+      {isTouch ? (
+        <div style={{
+          flexShrink: 0, width: 14, paddingTop: 3,
+          color: placing ? 'var(--terracotta)' : 'color-mix(in srgb, var(--muted) 60%, transparent)',
+          fontSize: '0.6rem', lineHeight: 1,
+          display: 'flex', alignItems: 'center',
+        }}>
+          {placing ? '●' : '○'}
+        </div>
+      ) : (
+        <div
+          {...listeners}
+          style={{ flexShrink: 0, paddingTop: 2, color: 'var(--muted)', cursor: 'grab', touchAction: 'none', opacity: 0.65 }}
+        >
+          <GripIcon />
+        </div>
+      )}
 
-      {/* Score badge — coloured circle matching Research tab */}
+      {/* Score badge */}
       <span style={{
         flexShrink: 0, width: 24, height: 24, borderRadius: '50%',
         background: level.color, color: '#000',
@@ -138,13 +195,11 @@ function PickerSpot({ spot, isAdded, onAdd }) {
 
       {/* Text block */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        {/* Category — small caps above name */}
         {spot.category && (
           <div style={{ fontSize: '0.62rem', fontWeight: 700, color: level.color, letterSpacing: '0.05em', textTransform: 'uppercase', marginBottom: 2, lineHeight: 1 }}>
             {spot.category}
           </div>
         )}
-        {/* Name — two-line clamp */}
         <div style={{
           fontSize: '0.82rem', fontWeight: 600, lineHeight: 1.3,
           color: isAdded ? 'var(--muted)' : 'var(--ink)',
@@ -154,9 +209,10 @@ function PickerSpot({ spot, isAdded, onAdd }) {
         </div>
       </div>
 
-      {/* Quick-add button */}
+      {/* Quick-add button — adds directly to Day 1 */}
       <button
         type="button"
+        disabled={isAdded}
         onClick={(e) => { e.stopPropagation(); onAdd(spot); }}
         style={{
           flexShrink: 0, width: 22, height: 22, borderRadius: '50%',
@@ -319,40 +375,68 @@ function TravelChip({ spotA, spotB }) {
   );
 }
 
-/* ── SlotZone (droppable slot section) ────────────────────────────────────── */
-function SlotZone({ slot, dayId, spots, onRemove }) {
+/* ── SlotZone (droppable slot section · tap-to-place on touch) ─────────────── */
+function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceHere }) {
   const zoneId = `zone__${dayId}__${slot}`;
-  const { setNodeRef, isOver } = useDroppable({ id: zoneId });
+  // Disable dnd-kit droppable on touch — we use tap instead
+  const { setNodeRef, isOver } = useDroppable({ id: zoneId, disabled: isTouch });
   const isEmpty = spots.length === 0;
+  const isPlacingActive = isTouch && placingSpot !== null;
+
+  function handleZoneTap(e) {
+    if (!isPlacingActive) return;
+    e.stopPropagation(); // don't bubble to root cancel handler
+    onPlaceHere(dayId, slot);
+  }
 
   return (
     <div style={{ marginBottom: 14 }}>
-      {/* Slot header — typographic label with coloured left border accent */}
+      {/* Slot header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 7, paddingLeft: 8, borderLeft: `2.5px solid ${SLOT_COLOR[slot]}` }}>
         <span style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--mono, monospace)' }}>
           {SLOT_LABEL[slot]}
         </span>
-        {spots.length > 0 && (
+        {spots.length > 0 && !isPlacingActive && (
           <span style={{ fontSize: '0.63rem', color: 'var(--muted)', marginLeft: 'auto', paddingRight: 4 }}>
             {spots.length} spot{spots.length !== 1 ? 's' : ''}
           </span>
         )}
+        {/* "Add here" pill — visible only when placing is active */}
+        {isPlacingActive && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onPlaceHere(dayId, slot); }}
+            style={{
+              marginLeft: 'auto', flexShrink: 0,
+              padding: '3px 9px', borderRadius: 6,
+              background: 'var(--terracotta)', color: '#fff',
+              border: 'none', fontSize: '0.62rem', fontWeight: 700,
+              cursor: 'pointer', lineHeight: 1.4,
+            }}
+          >
+            Add here
+          </button>
+        )}
       </div>
 
-      {/* Drop zone */}
+      {/* Drop zone — tappable when placing is active */}
       <div
         ref={setNodeRef}
+        onClick={isPlacingActive ? handleZoneTap : undefined}
         style={{
           minHeight:    isEmpty ? 44 : 'auto',
           borderRadius: 8,
-          border:       isEmpty
-            ? `1.5px dashed ${isOver ? 'var(--accent)' : 'var(--line)'}`
-            : isOver ? `1.5px dashed var(--accent)` : 'none',
-          background:   isOver ? 'rgba(245,158,11,0.04)' : 'transparent',
+          border: isEmpty
+            ? `1.5px dashed ${isPlacingActive ? 'color-mix(in srgb,var(--terracotta) 55%,transparent)' : isOver ? 'var(--accent)' : 'var(--line)'}`
+            : isPlacingActive ? `1.5px dashed color-mix(in srgb,var(--terracotta) 40%,transparent)` : isOver ? `1.5px dashed var(--accent)` : 'none',
+          background: isPlacingActive
+            ? 'color-mix(in oklch, var(--terracotta) 3%, transparent)'
+            : isOver ? 'rgba(245,158,11,0.04)' : 'transparent',
           transition:   'border-color 0.15s, background 0.15s',
           display:      'flex', flexDirection: 'column',
           alignItems:   isEmpty ? 'center' : 'stretch',
           justifyContent: isEmpty ? 'center' : 'flex-start',
+          cursor: isPlacingActive ? 'pointer' : 'default',
         }}
       >
         <SortableContext items={spots.map(s => s.dayPlanSpotId)} strategy={verticalListSortingStrategy}>
@@ -366,8 +450,13 @@ function SlotZone({ slot, dayId, spots, onRemove }) {
 
         {isEmpty && (
           <div style={{ height: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: '0.67rem', color: isOver ? 'var(--accent)' : 'color-mix(in srgb, var(--muted) 55%, transparent)', fontStyle: 'italic' }}>
-              {isOver ? '📌 Drop here' : '+ Drag a spot here'}
+            <span style={{
+              fontSize: '0.67rem', fontStyle: 'italic',
+              color: isPlacingActive
+                ? 'color-mix(in srgb, var(--terracotta) 75%, transparent)'
+                : isOver ? 'var(--accent)' : 'color-mix(in srgb, var(--muted) 55%, transparent)',
+            }}>
+              {isPlacingActive ? '📌 Tap to add here' : isOver ? '📌 Drop here' : '+ Drag a spot here'}
             </span>
           </div>
         )}
@@ -377,7 +466,7 @@ function SlotZone({ slot, dayId, spots, onRemove }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere }) {
   const [open, setOpen] = useState(true);
 
   const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
@@ -440,6 +529,9 @@ function DaySection({ day, slots, onRemove }) {
               dayId={day.id}
               spots={slots[slot] ?? []}
               onRemove={onRemove}
+              isTouch={isTouch}
+              placingSpot={placingSpot}
+              onPlaceHere={onPlaceHere}
             />
           ))}
 
@@ -491,6 +583,7 @@ export default function DaysBuilder({
   user,
   onRefetch,
   onSwitchToResearch,
+  onToggleSave,
   toast,
 }) {
   /* ── Slot state (mirrors days prop, optimistically updated by DnD) ───────── */
@@ -521,14 +614,46 @@ export default function DaysBuilder({
     return ids;
   }, [allSlots_]);
 
+  /* ── Touch + mobile detection ───────────────────────────────────────────── */
+  const [isTouch,  setIsTouch]  = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mqTouch  = window.matchMedia('(pointer: coarse)');
+    const mqMobile = window.matchMedia('(max-width: 700px)');
+    setIsTouch(mqTouch.matches);
+    setIsMobile(mqMobile.matches);
+    const onTouch  = (e) => setIsTouch(e.matches);
+    const onMobile = (e) => setIsMobile(e.matches);
+    mqTouch.addEventListener('change', onTouch);
+    mqMobile.addEventListener('change', onMobile);
+    return () => {
+      mqTouch.removeEventListener('change', onTouch);
+      mqMobile.removeEventListener('change', onMobile);
+    };
+  }, []);
+
+  /* ── Tap-to-place state (touch only) ─────────────────────────────────────── */
+  const [placingSpot, setPlacingSpot] = useState(null); // spot selected for placement
+
+  /* ── Mobile panel toggle ('picker' | 'planner') ─────────────────────────── */
+  const [mobilePanel, setMobilePanel] = useState('planner');
+
+  /* ── Add-to-plan bottom sheet ────────────────────────────────────────────── */
+  const [sheetSpot,      setSheetSpot]      = useState(null); // spot being scheduled
+  const [sheetDayId,     setSheetDayId]     = useState(null); // expanded day row
+
+  /* ── Filters sheet (mobile) ──────────────────────────────────────────────── */
+  const [filtersSheetOpen, setFiltersSheetOpen] = useState(false);
+
   /* ── Picker state ────────────────────────────────────────────────────────── */
   const [pickerMode,       setPickerMode]       = useState('starred'); // 'starred' | 'all'
   const [pickerSearch,     setPickerSearch]     = useState('');
   const [pickerCategories_, setPickerCategories_] = useState(new Set()); // multi-select
   const [pickerMinScore,   setPickerMinScore]   = useState(0);
 
-  // Reset filters when mode toggles
-  useEffect(() => { setPickerCategories_(new Set()); setPickerMinScore(0); }, [pickerMode]);
+  // Reset filters (and any active placing) when mode toggles
+  useEffect(() => { setPickerCategories_(new Set()); setPickerMinScore(0); setPlacingSpot(null); }, [pickerMode]);
 
   /* ── Adding guard — prevents double-write on rapid clicks or drag+click ─── */
   const addingRef = useRef(new Set()); // Set of spotIds currently being added
@@ -729,6 +854,74 @@ export default function DaysBuilder({
     }
   }
 
+  /* ── Touch: tap-to-place handler ────────────────────────────────────────── */
+  async function handlePlaceSpot(dayId, slot) {
+    if (!placingSpot) return;
+    const day = days.find(d => d.id === dayId);
+    if (!day) return;
+    const addKey = `${placingSpot.id}:${slot}`;
+    if (addingRef.current.has(addKey)) return;
+    addingRef.current.add(addKey);
+    const spotToPlace = placingSpot;
+    setPlacingSpot(null); // clear immediately for snappy UX
+    try {
+      await addSpotToDayPlan(day.id, spotToPlace.id, city, slot);
+      onRefetch();
+      toast?.success?.(`${spotToPlace.name} added to Day ${day.dayNumber}`);
+    } catch (err) {
+      console.error('[DaysBuilder] placeSpot error:', err);
+      toast?.error?.('Failed to add spot');
+    } finally {
+      addingRef.current.delete(addKey);
+    }
+  }
+
+  /* ── Touch: select spot for placing; auto-navigate to planner on mobile ─── */
+  function handleSelectForPlace(spot) {
+    setPlacingSpot(spot);
+    if (spot !== null && isMobile) setMobilePanel('planner');
+  }
+
+  /* ── Bottom sheet: open (auto-expands first day) ─────────────────────────── */
+  function handleOpenSheet(spot) {
+    setSheetSpot(spot);
+    setSheetDayId(days[0]?.id ?? null); // pre-expand first day for one-less-tap
+  }
+
+  /* ── Bottom sheet: place the spot ───────────────────────────────────────── */
+  async function handleSheetPlace(dayId, slot) {
+    if (!sheetSpot) return;
+    const day = days.find(d => d.id === dayId);
+    if (!day) return;
+    const addKey = `${sheetSpot.id}:${slot}`;
+    if (addingRef.current.has(addKey)) return;
+    addingRef.current.add(addKey);
+    const spotToAdd = sheetSpot;
+    setSheetSpot(null); // close sheet immediately (snappy)
+    setSheetDayId(null);
+    try {
+      await addSpotToDayPlan(day.id, spotToAdd.id, city, slot);
+      onRefetch();
+      toast?.success?.(`${spotToAdd.name} → Day ${day.dayNumber} ${SLOT_LABEL[slot]}`);
+    } catch (err) {
+      console.error('[DaysBuilder] sheetPlace error:', err);
+      toast?.error?.('Failed to add spot');
+    } finally {
+      addingRef.current.delete(addKey);
+    }
+  }
+
+  /* ── Bottom sheet: "Just save it" (star without scheduling) ─────────────── */
+  function handleSheetSave() {
+    if (!sheetSpot) return;
+    const already = savedIds.has(sheetSpot.id);
+    if (!already && onToggleSave) onToggleSave(sheetSpot, true);
+    const name = sheetSpot.name;
+    setSheetSpot(null);
+    setSheetDayId(null);
+    toast?.success?.(already ? `${name} already saved` : `${name} saved ★`);
+  }
+
   /* ── Picker list ─────────────────────────────────────────────────────────── */
   const pickerBase = useMemo(
     () => pickerMode === 'starred' ? spots.filter(s => savedIds.has(s.id)) : spots,
@@ -736,13 +929,13 @@ export default function DaysBuilder({
   );
 
   const availableCategories = useMemo(
-    () => [...new Set(pickerBase.map(s => s.category).filter(Boolean))].sort(),
+    () => [...new Set(pickerBase.map(s => normalizeCategory(s.category)).filter(Boolean))].sort(),
     [pickerBase],
   );
 
   const pickerSpots = useMemo(() => {
     let s = pickerBase;
-    if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(sp.category ?? ''));
+    if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(normalizeCategory(sp.category ?? '')));
     if (pickerMinScore > 0) s = s.filter(sp => (sp.hiddennessScore ?? 1) >= pickerMinScore);
     const q = pickerSearch.toLowerCase().trim();
     if (q) s = s.filter(sp => sp.name?.toLowerCase().includes(q) || sp.category?.toLowerCase().includes(q));
@@ -782,20 +975,71 @@ export default function DaysBuilder({
 
   /* ── Render ──────────────────────────────────────────────────────────────── */
   return (
-    <DndContext
+    <><DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDragEnd={onDragEnd}
     >
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+      {/* Tapping outside picker/slots cancels placing mode */}
+      <div
+        style={{ flex: 1, display: 'flex', flexDirection: isMobile ? 'column' : 'row', overflow: 'hidden', minHeight: 0 }}
+        onClick={() => { if (placingSpot) setPlacingSpot(null); }}
+      >
+
+        {/* ── Mobile tab bar — Spots ↔ Plan ─────────────────────────────── */}
+        {isMobile && (
+          <div style={{
+            flexShrink: 0, display: 'flex',
+            borderBottom: '1px solid var(--border)',
+            background: 'var(--bg)',
+          }}>
+            {[
+              { id: 'picker',  label: '★ Spots',   count: pickerSpots.length },
+              { id: 'planner', label: '📅 Plan',    count: totalSpots || null },
+            ].map(({ id, label, count }) => {
+              const active = mobilePanel === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setMobilePanel(id); }}
+                  style={{
+                    flex: 1, padding: '11px 8px',
+                    border: 'none', borderBottom: active ? '2px solid var(--terracotta)' : '2px solid transparent',
+                    background: 'transparent',
+                    color: active ? 'var(--ink)' : 'var(--muted)',
+                    fontSize: '0.8rem', fontWeight: active ? 700 : 400,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+                  }}
+                >
+                  {label}
+                  {count != null && count > 0 && (
+                    <span style={{
+                      fontSize: '0.65rem', fontWeight: 700,
+                      background: active ? 'var(--terracotta)' : 'var(--line-strong)',
+                      color: active ? '#fff' : 'var(--muted)',
+                      padding: '1px 6px', borderRadius: 9,
+                      transition: 'all 0.15s',
+                    }}>
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* ══ Left: Spot Picker ════════════════════════════════════════════ */}
         <div style={{
-          width: 300, flexShrink: 0,
-          borderRight: '1px solid var(--border)',
-          display: 'flex', flexDirection: 'column',
+          ...(isMobile
+            ? { flex: 1, width: '100%', display: mobilePanel === 'picker' ? 'flex' : 'none' }
+            : { width: 300, flexShrink: 0, display: 'flex', borderRight: '1px solid var(--border)' }
+          ),
+          flexDirection: 'column',
           overflow: 'hidden',
           background: 'var(--bg)',
         }}>
@@ -821,28 +1065,56 @@ export default function DaysBuilder({
             </div>
           </div>
 
-          {/* Search */}
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8 }}>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ flexShrink: 0, color: 'var(--muted)' }}>
-                <circle cx="11" cy="11" r="7" />
-                <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
-              </svg>
-              <input
-                type="text"
-                placeholder="Search spots, categories…"
-                value={pickerSearch}
-                onChange={e => setPickerSearch(e.target.value)}
-                style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: '0.78rem', outline: 'none' }}
-              />
-              {pickerSearch && (
-                <button type="button" onClick={() => setPickerSearch('')} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: 0 }}>×</button>
-              )}
-            </div>
-          </div>
+          {/* Search + Filters button */}
+          {(() => {
+            const activeFilterCount = pickerCategories_.size + (pickerMinScore > 0 ? 1 : 0);
+            return (
+              <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, display: 'flex', gap: 7, alignItems: 'center' }}>
+                {/* Search input */}
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} style={{ flexShrink: 0, color: 'var(--muted)' }}>
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.3-4.3" strokeLinecap="round" />
+                  </svg>
+                  <input
+                    type="text"
+                    placeholder="Search spots…"
+                    value={pickerSearch}
+                    onChange={e => setPickerSearch(e.target.value)}
+                    style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: '0.78rem', outline: 'none' }}
+                  />
+                  {pickerSearch && (
+                    <button type="button" onClick={() => setPickerSearch('')} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: 0 }}>×</button>
+                  )}
+                </div>
 
-          {/* Category filter chips — multi-select, wraps naturally */}
-          {availableCategories.length > 1 && (
+                {/* Filters button — mobile only */}
+                {isMobile && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); setFiltersSheetOpen(true); }}
+                    style={{
+                      flexShrink: 0, height: 32, padding: '0 11px',
+                      border: `1.5px solid ${activeFilterCount > 0 ? 'var(--terracotta)' : 'var(--border)'}`,
+                      borderRadius: 8,
+                      background: activeFilterCount > 0 ? 'color-mix(in oklch, var(--terracotta) 9%, transparent)' : 'transparent',
+                      color: activeFilterCount > 0 ? 'var(--terracotta)' : 'var(--muted)',
+                      fontSize: '0.73rem', fontWeight: 600, cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap',
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round">
+                      <path d="M4 6h16M7 12h10M10 18h4"/>
+                    </svg>
+                    {activeFilterCount > 0 ? `Filters · ${activeFilterCount}` : 'Filters'}
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Category + score chips — desktop only */}
+          {!isMobile && availableCategories.length > 1 && (
             <div style={{ padding: '6px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
                 <button type="button" className={'chip' + (pickerCategories_.size === 0 ? ' on' : '')} onClick={() => setPickerCategories_(new Set())} style={{ fontSize: '0.67rem', padding: '4px 10px' }}>All</button>
@@ -857,20 +1129,20 @@ export default function DaysBuilder({
               </div>
             </div>
           )}
-
-          {/* Score filter chips — single-select, wraps naturally */}
-          <div style={{ padding: '5px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-              {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Radar', min: 7 }, { label: '9+ Ultra', min: 9 }].map(({ label, min }) => (
-                <button key={min} type="button"
-                  className={'chip' + (pickerMinScore === min ? ' on' : '')}
-                  onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
-                  style={{ fontSize: '0.67rem', padding: '4px 10px' }}>
-                  {label}
-                </button>
-              ))}
+          {!isMobile && (
+            <div style={{ padding: '5px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Radar', min: 7 }, { label: '9+ Ultra', min: 9 }].map(({ label, min }) => (
+                  <button key={min} type="button"
+                    className={'chip' + (pickerMinScore === min ? ' on' : '')}
+                    onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
+                    style={{ fontSize: '0.67rem', padding: '4px 10px' }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Spot list */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
@@ -900,7 +1172,10 @@ export default function DaysBuilder({
                   key={spot.id}
                   spot={spot}
                   isAdded={addedSpotIds.has(spot.id)}
-                  onAdd={handlePickerAdd}
+                  onAdd={handleOpenSheet}
+                  isTouch={isTouch}
+                  placing={placingSpot?.id === spot.id}
+                  onSelectForPlace={handleSelectForPlace}
                 />
               ))
             )}
@@ -908,7 +1183,43 @@ export default function DaysBuilder({
         </div>
 
         {/* ══ Right: Day Planner ═══════════════════════════════════════════ */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+        <div style={{
+          flex: 1, flexDirection: 'column', overflow: 'hidden', minHeight: 0,
+          display: isMobile && mobilePanel !== 'planner' ? 'none' : 'flex',
+        }}>
+
+          {/* ── Placing banner (touch only) — visible when a spot is selected ── */}
+          {isTouch && placingSpot && (
+            <div style={{
+              flexShrink: 0, padding: '8px 14px',
+              background: 'color-mix(in oklch, var(--terracotta) 10%, var(--card))',
+              borderBottom: '1px solid color-mix(in oklch, var(--terracotta) 22%, transparent)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                <span style={{ fontSize: '0.85rem', flexShrink: 0 }}>📌</span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--terracotta)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {placingSpot.name}
+                  </div>
+                  <div style={{ fontSize: '0.66rem', color: 'var(--muted)', marginTop: 1 }}>
+                    Tap a slot to place it there
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setPlacingSpot(null); }}
+                style={{
+                  flexShrink: 0, background: 'none', border: 'none',
+                  color: 'var(--muted)', cursor: 'pointer',
+                  fontSize: '1.15rem', lineHeight: 1, padding: '4px',
+                }}
+              >
+                ×
+              </button>
+            </div>
+          )}
 
           {/* Toolbar */}
           <div style={{
@@ -994,6 +1305,9 @@ export default function DaysBuilder({
                 day={day}
                 slots={allSlots_[day.id] ?? { morning: [], afternoon: [], evening: [] }}
                 onRemove={handleRemove}
+                isTouch={isTouch}
+                placingSpot={placingSpot}
+                onPlaceHere={handlePlaceSpot}
               />
             ))}
 
@@ -1027,5 +1341,295 @@ export default function DaysBuilder({
         {activeItem?.type === 'placed' && activeItem.spot && <PlacedSpotOverlay spot={activeItem.spot} />}
       </DragOverlay>
     </DndContext>
+
+    {/* ── Filters bottom sheet (mobile) ────────────────────────────────── */}
+    {filtersSheetOpen && (() => {
+      const activeFilterCount = pickerCategories_.size + (pickerMinScore > 0 ? 1 : 0);
+      return (
+        <>
+          <div
+            onClick={() => setFiltersSheetOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(2px)' }}
+          />
+          <div
+            style={{
+              position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 301,
+              background: 'var(--card)', borderRadius: '20px 20px 0 0',
+              boxShadow: '0 -8px 40px rgba(0,0,0,0.28)',
+              animation: 'slideUp 0.22s ease',
+              maxHeight: '80dvh', display: 'flex', flexDirection: 'column',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 18px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <span style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--ink)' }}>Filters</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {activeFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => { setPickerCategories_(new Set()); setPickerMinScore(0); }}
+                    style={{ background: 'none', border: 'none', color: 'var(--terracotta)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', padding: '2px 6px' }}
+                  >
+                    Clear all
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setFiltersSheetOpen(false)}
+                  style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, padding: '2px 4px' }}
+                >×</button>
+              </div>
+            </div>
+
+            {/* Scrollable content */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '4px 0 8px' }}>
+
+              {/* Show: Starred / All */}
+              <div style={{ padding: '14px 18px 10px' }}>
+                <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 10 }}>Show</div>
+                <div style={{ display: 'flex', borderRadius: 9, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                  {[['starred', '★ Starred'], ['all', '☰ All spots']].map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setPickerMode(mode)}
+                      style={{
+                        flex: 1, padding: '9px 8px', border: 'none',
+                        background: pickerMode === mode ? 'var(--accent-dim)' : 'transparent',
+                        color: pickerMode === mode ? 'var(--accent)' : 'var(--muted)',
+                        fontSize: '0.78rem', fontWeight: pickerMode === mode ? 700 : 400,
+                        cursor: 'pointer', transition: 'all 0.15s',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Categories */}
+              {availableCategories.length > 1 && (
+                <div style={{ padding: '6px 18px 12px', borderTop: '1px solid var(--border)' }}>
+                  <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', margin: '12px 0 10px' }}>Category</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    <button type="button" className={'chip' + (pickerCategories_.size === 0 ? ' on' : '')} onClick={() => setPickerCategories_(new Set())} style={{ fontSize: '0.74rem', padding: '6px 12px' }}>All</button>
+                    {availableCategories.map(cat => (
+                      <button key={cat} type="button"
+                        className={'chip' + (pickerCategories_.has(cat) ? ' on' : '')}
+                        onClick={() => setPickerCategories_(prev => { const n = new Set(prev); n.has(cat) ? n.delete(cat) : n.add(cat); return n; })}
+                        style={{ fontSize: '0.74rem', padding: '6px 12px' }}>
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Score */}
+              <div style={{ padding: '6px 18px 14px', borderTop: '1px solid var(--border)' }}>
+                <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', margin: '12px 0 10px' }}>Hiddenness score</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Off-radar', min: 7 }, { label: '9+ Ultra hidden', min: 9 }].map(({ label, min }) => (
+                    <button key={min} type="button"
+                      className={'chip' + (pickerMinScore === min ? ' on' : '')}
+                      onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
+                      style={{ fontSize: '0.74rem', padding: '6px 12px' }}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Done button */}
+            <div style={{ flexShrink: 0, padding: '10px 18px', borderTop: '1px solid var(--border)' }}>
+              <button
+                type="button"
+                onClick={() => setFiltersSheetOpen(false)}
+                style={{
+                  width: '100%', padding: '13px',
+                  background: 'var(--terracotta)', color: '#fff',
+                  border: 'none', borderRadius: 12,
+                  fontSize: '0.9rem', fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {activeFilterCount > 0 ? `Show results · ${activeFilterCount} filter${activeFilterCount !== 1 ? 's' : ''} active` : 'Done'}
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    })()}
+
+    {/* ── Add-to-plan bottom sheet ──────────────────────────────────────── */}
+    {sheetSpot && (() => {
+      const level = getHiddennessLevel(sheetSpot.hiddennessScore ?? 1);
+      const isSaved = savedIds.has(sheetSpot.id);
+      return (
+        <>
+          {/* Backdrop */}
+          <div
+            onClick={() => { setSheetSpot(null); setSheetDayId(null); }}
+            style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(2px)' }}
+          />
+
+          {/* Sheet */}
+          <div
+            style={{
+              position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 301,
+              background: 'var(--card)', borderRadius: '20px 20px 0 0',
+              boxShadow: '0 -8px 40px rgba(0,0,0,0.30)',
+              animation: 'slideUp 0.22s ease',
+              maxHeight: '82dvh', display: 'flex', flexDirection: 'column',
+              paddingBottom: 'env(safe-area-inset-bottom)',
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div style={{
+              display: 'flex', alignItems: 'flex-start', gap: 12,
+              padding: '18px 18px 14px',
+              borderBottom: '1px solid var(--border)',
+              flexShrink: 0,
+            }}>
+              <span style={{
+                flexShrink: 0, width: 28, height: 28, borderRadius: '50%',
+                background: level.color, color: '#000',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '0.68rem', fontWeight: 700, marginTop: 2,
+                boxShadow: `0 0 6px ${level.color}55`,
+              }}>
+                {sheetSpot.hiddennessScore ?? 1}
+              </span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--ink)', lineHeight: 1.3 }}>
+                  {sheetSpot.name}
+                </div>
+                {sheetSpot.category && (
+                  <div style={{ fontSize: '0.73rem', color: 'var(--muted)', marginTop: 3 }}>
+                    {sheetSpot.category}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => { setSheetSpot(null); setSheetDayId(null); }}
+                style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, padding: '2px 4px' }}
+              >×</button>
+            </div>
+
+            {/* Day list */}
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', padding: '12px 18px 6px' }}>
+                Choose a day &amp; time
+              </div>
+
+              {days.map((day) => {
+                const expanded = sheetDayId === day.id;
+                return (
+                  <div key={day.id}>
+                    {/* Day row */}
+                    <button
+                      type="button"
+                      onClick={() => setSheetDayId(expanded ? null : day.id)}
+                      style={{
+                        width: '100%', padding: '12px 18px',
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        border: 'none',
+                        borderLeft: `3px solid ${expanded ? 'var(--terracotta)' : 'transparent'}`,
+                        background: expanded ? 'color-mix(in oklch, var(--terracotta) 5%, var(--card))' : 'transparent',
+                        cursor: 'pointer', transition: 'background 0.12s',
+                        textAlign: 'left',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: '0.84rem', fontWeight: expanded ? 700 : 500, color: expanded ? 'var(--terracotta)' : 'var(--ink)' }}>
+                          Day {day.dayNumber}
+                        </span>
+                        {day.planDate && (
+                          <span style={{ fontSize: '0.73rem', color: 'var(--muted)' }}>
+                            · {fmtDayLabel(day.planDate)}
+                          </span>
+                        )}
+                      </div>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"
+                        style={{ color: 'var(--muted)', transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s', flexShrink: 0 }}>
+                        <path d="M6 9l6 6 6-6"/>
+                      </svg>
+                    </button>
+
+                    {/* Slot buttons — only when expanded */}
+                    {expanded && (
+                      <div style={{
+                        display: 'flex', gap: 8, padding: '8px 18px 14px',
+                        background: 'color-mix(in oklch, var(--terracotta) 3%, var(--card))',
+                      }}>
+                        {[
+                          ['morning',   '🌅', 'Morning'],
+                          ['afternoon', '☀️', 'Afternoon'],
+                          ['evening',   '🌙', 'Evening'],
+                        ].map(([slot, icon, label]) => (
+                          <button
+                            key={slot}
+                            type="button"
+                            onClick={() => handleSheetPlace(day.id, slot)}
+                            style={{
+                              flex: 1, padding: '11px 6px',
+                              border: '1.5px solid var(--terracotta)',
+                              borderRadius: 11, background: 'transparent',
+                              color: 'var(--terracotta)',
+                              fontSize: '0.75rem', fontWeight: 600,
+                              cursor: 'pointer', transition: 'all 0.12s',
+                              display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = 'color-mix(in oklch, var(--terracotta) 12%, transparent)'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <span style={{ fontSize: '1.05rem' }}>{icon}</span>
+                            <span>{label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Empty — no days planned yet */}
+              {days.length === 0 && (
+                <div style={{ padding: '24px 18px', textAlign: 'center', color: 'var(--muted)', fontSize: '0.82rem' }}>
+                  No day plans yet.<br />Add dates to your trip to create day slots.
+                </div>
+              )}
+            </div>
+
+            {/* Footer — "Just save it" */}
+            <div style={{ flexShrink: 0, padding: '12px 18px', borderTop: '1px solid var(--border)' }}>
+              <button
+                type="button"
+                onClick={handleSheetSave}
+                style={{
+                  width: '100%', padding: '12px',
+                  background: isSaved ? 'color-mix(in oklch, var(--terracotta) 6%, transparent)' : 'transparent',
+                  border: `1.5px solid ${isSaved ? 'var(--terracotta)' : 'var(--line-strong)'}`,
+                  borderRadius: 12,
+                  color: isSaved ? 'var(--terracotta)' : 'var(--ink-soft)',
+                  fontSize: '0.84rem', fontWeight: 600,
+                  cursor: 'pointer', transition: 'all 0.14s',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7,
+                }}
+              >
+                <span style={{ fontSize: '0.9rem' }}>{isSaved ? '★' : '☆'}</span>
+                {isSaved ? 'Already saved' : 'Just save it'}
+              </button>
+            </div>
+          </div>
+        </>
+      );
+    })()}
+    </>
   );
 }

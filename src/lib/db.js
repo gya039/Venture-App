@@ -516,12 +516,12 @@ export async function clearCityCache(city) {
 }
 
 // ---------------------------------------------------------------------------
-// City Passes (curated — manually seeded via console or seed script)
+// City Passes — served from the local constants file (no Firestore round-trip)
 // ---------------------------------------------------------------------------
 
+import { getCityPass as _getCityPassFromConstants } from '@/constants/cityPasses';
 export async function getCityPass(city) {
-  const snap = await getDoc(doc(db, 'cityPasses', city.toLowerCase()));
-  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  return _getCityPassFromConstants(city) ?? null;
 }
 
 // ---------------------------------------------------------------------------

@@ -123,7 +123,7 @@ export default function AuthPage() {
           <div className="ab-eyebrow">The Field Guide</div>
           <h1>Discover what most tourists <em>never find.</em></h1>
           <p className="ab-sub">
-            AI researches any city in seconds — 20 scored hidden gems, an interactive map, and a day-by-day itinerary. All free.
+            AI researches any city in seconds — dozens of scored hidden gems, an interactive map, and a day-by-day itinerary. All free.
           </p>
 
           {/* Hiddenness spectrum */}

@@ -294,7 +294,8 @@ export default function TripDetailPage() {
     if (starredOnly) {
       s = s.filter((sp) => savedIds.has(sp.id));
     }
-    return s;
+    // Default: highest score first
+    return [...s].sort((a, b) => (b.hiddennessScore ?? 1) - (a.hiddennessScore ?? 1));
   }, [spots, filterInterests, minScoreFilter, searchQuery, starredOnly, savedIds]);
 
   /* ── Keyboard navigation ────────────────────────────────────────────────── */
@@ -884,7 +885,7 @@ export default function TripDetailPage() {
                         </div>
                       </div>
                       <div className="progresscount">
-                        <b>{streamingSpots.length}</b> / ~20
+                        <b>{streamingSpots.length}</b> found
                       </div>
                     </div>
                   )}
@@ -1059,6 +1060,7 @@ export default function TripDetailPage() {
               user={user}
               onRefetch={refetchDays}
               onSwitchToResearch={() => setActiveTab('Research')}
+              onToggleSave={toggleSave}
               toast={toast}
             />
           )}
