@@ -516,6 +516,41 @@ export async function clearCityCache(city) {
 }
 
 // ---------------------------------------------------------------------------
+// Deep spot cache — cityDeepSpots/{cacheId}/spots/{id}
+// Stored separately from the curated cache so they never mix.
+// ---------------------------------------------------------------------------
+
+/** Stable Firestore doc ID for a city+category pair */
+function deepCacheId(city, category) {
+  const c = (s) => s.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+  return `${c(city)}__${c(category)}`;
+}
+
+export async function getCachedDeepSpots(city, category) {
+  const cid  = deepCacheId(city, category);
+  const snap = await getDocs(collection(db, 'cityDeepSpots', cid, 'spots'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function cacheDeepSpots(city, category, spots) {
+  const cid   = deepCacheId(city, category);
+  const colRef = collection(db, 'cityDeepSpots', cid, 'spots');
+  // Write in batches of 500 (Firestore limit)
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < spots.length; i += BATCH_SIZE) {
+    const batch = writeBatch(db);
+    spots.slice(i, i + BATCH_SIZE).forEach((spot) => {
+      batch.set(doc(colRef), { ...spot, city, deepCategory: category, cachedAt: new Date().toISOString() });
+    });
+    // Write the parent metadata doc on the first batch
+    if (i === 0) {
+      batch.set(doc(db, 'cityDeepSpots', cid), { city, category, cachedAt: new Date().toISOString() });
+    }
+    await batch.commit();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // City Passes — served from the local constants file (no Firestore round-trip)
 // ---------------------------------------------------------------------------
 

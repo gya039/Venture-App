@@ -76,6 +76,27 @@ Use real, accurate addresses including street name and postcode where known.
 
 IMPORTANT: Your response must be complete, valid, parseable JSON. If you are approaching your output limit, immediately stop adding new spots and close the JSON array cleanly with \`]}\`. A truncated response wastes everything that came before it.`;
 
+// ---------------------------------------------------------------------------
+// Deep-mode prompt — comprehensive single-category directory
+// ---------------------------------------------------------------------------
+
+const buildDeepPrompt = (city, category) => `You are a comprehensive travel directory researcher.
+
+Produce a COMPLETE list of every "${category}" spot you know in ${city}.
+
+This is a directory, not a curated list:
+- Include EVERYTHING: famous, popular, hidden, obscure — completeness is the goal
+- Do NOT omit a spot because it's well-known or touristy. It belongs here alongside the hidden gems.
+- Score hiddenness (1–10) honestly so the user knows what to expect:
+  1–3: Globally famous, on every tour itinerary
+  4–6: Known to informed travellers
+  7–10: Genuine local knowledge, rarely tourist-facing
+- Score editorialConfidence on whether the entry is a real, specific place you are confident exists.
+- Do NOT invent. Every entry must be a real place.
+- Return as many genuine spots as you know — there is no target number.
+
+${JSON_SCHEMA}`.trim();
+
 const buildPromptPass1 = (city, interests) => `You are a specialist travel researcher focused on history, architecture, and neighbourhood character.
 
 Research "${city}" — include ONLY spots from these categories:
@@ -508,7 +529,7 @@ async function geocodeSpot(spot, city, cityCenter, token) {
 // ---------------------------------------------------------------------------
 
 export async function POST(request) {
-  const { city, interests = [] } = await request.json();
+  const { city, interests = [], mode = 'curated', category = '' } = await request.json();
   if (!city) return new Response('{"error":"city is required"}', { status: 400 });
 
   const encoder = new TextEncoder();
@@ -520,6 +541,53 @@ export async function POST(request) {
       };
 
       try {
+        // ══ Deep mode: single comprehensive pass for ONE category ═════════════
+        if (mode === 'deep' && category) {
+          send('status', { message: `Researching all ${category} in ${city}…` });
+
+          const deepRaw   = await callOpenAI(buildDeepPrompt(city, category));
+          console.log(`[research/deep] ${city}/${category}: AI returned ${deepRaw.length} spots`);
+
+          // No quality gate in deep mode — everything is labelled, nothing hidden
+          const cleanSpots = deepRaw.map(({ lat, lng, latitude, longitude, ...rest }) => rest);
+          if (!cleanSpots.length) throw new Error('AI returned no spots for this category.');
+
+          send('status', { message: `${cleanSpots.length} ${category} spots found — geocoding…` });
+          send('total',  { count: cleanSpots.length });
+
+          const token      = process.env.MAPBOX_SERVER_TOKEN ?? process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+          const cityCenter = token ? await getCityCenter(city, token) : null;
+
+          let sent = 0, skipped = 0;
+          const queue = cleanSpots.slice();
+
+          const workers = Array.from(
+            { length: Math.min(5, cleanSpots.length) },
+            async () => {
+              while (queue.length > 0) {
+                const spot = queue.shift();
+                if (!spot) continue;
+                const geocoded = (token && cityCenter)
+                  ? await geocodeSpot(spot, city, cityCenter, token)
+                  : { ...spot, coordsMissing: true };
+                if (geocoded.coordsMissing) { skipped++; }
+                else { send('spot', { ...geocoded, deepCategory: category }); sent++; }
+              }
+            }
+          );
+          await Promise.all(workers);
+
+          if (sent === 0) {
+            send('error', { message: `Geocoding failed for all spots in ${city} / ${category}.` });
+          } else {
+            console.log(`[research/deep] ${city}/${category}: sent=${sent} skipped=${skipped}`);
+            send('summary', { generated: deepRaw.length, unique: cleanSpots.length, geocoded: sent, dropped: skipped, city, category, mode: 'deep' });
+            send('done', { total: sent });
+          }
+          return; // don't fall through to curated mode
+        }
+
+        // ══ Curated mode: 6-pass research ════════════════════════════════════
         // ── Pass 1: History, architecture, neighbourhood character ────────────
         send('status', { message: 'Pass 1 of 6 — researching history, architecture and neighbourhood character…' });
         const pass1 = await callOpenAI(buildPromptPass1(city, interests));

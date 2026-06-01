@@ -9,7 +9,7 @@ import { track } from '@/lib/analytics';
 import { useDestination } from '@/hooks/useDestination';
 import { useDayPlanner } from '@/hooks/useDayPlanner';
 import { useSavedSpots } from '@/hooks/useSavedSpots';
-import { runResearch } from '@/lib/functions';
+import { runResearch, runDeepResearch } from '@/lib/functions';
 import SpotCard from '@/components/SpotCard';
 import SpotDrawer from '@/components/SpotDrawer';
 import CountdownBadge from '@/components/CountdownBadge';
@@ -203,6 +203,13 @@ export default function TripDetailPage() {
   const [scoreDropdownOpen,    setScoreDropdownOpen]    = useState(false);
   const [starredOnly,          setStarredOnly]          = useState(false);
 
+  // Deep browse lens (Phase 2B)
+  const [deepInterestId,   setDeepInterestId]   = useState(null);   // null = curated mode
+  const [deepSpots,        setDeepSpots]        = useState([]);
+  const [deepStreaming,    setDeepStreaming]     = useState([]);
+  const [deepLoading,      setDeepLoading]      = useState(false);
+  const [deepError,        setDeepError]        = useState(null);
+
   /* ── Load trip ──────────────────────────────────────────────────────────── */
   useEffect(() => {
     if (!tripId || !authReady) return;
@@ -387,6 +394,37 @@ export default function TripDetailPage() {
     triggerResearch();
   }, [selectedDest?.id, spots.length, spotsLoading, isResearching]); // eslint-disable-line
 
+  /* ── Deep browse research ───────────────────────────────────────────────── */
+  const triggerDeepResearch = useCallback(async (interestId) => {
+    const interest = INTERESTS.find((i) => i.id === interestId);
+    if (!interest || !selectedDest?.city) return;
+    setDeepInterestId(interestId);
+    setDeepLoading(true);
+    setDeepError(null);
+    setDeepStreaming([]);
+    setDeepSpots([]);
+    try {
+      const { spots: result } = await runDeepResearch(
+        selectedDest.city,
+        interest.label,
+        false,
+        {
+          onSpot:    (s)   => setDeepStreaming((prev) => [...prev, s]),
+          onStatus:  (msg) => setResearchStatus(msg),
+          onSummary: (s)   => toast.info?.(`${s.fromCache ? 'Loaded' : 'Found'} ${s.geocoded} ${interest.label} spots`),
+        },
+      );
+      setDeepSpots(result);
+      setDeepStreaming([]);
+    } catch (err) {
+      setDeepError(err.message);
+      toast.error(err.message);
+    } finally {
+      setDeepLoading(false);
+      setResearchStatus('');
+    }
+  }, [selectedDest?.city, toast]); // eslint-disable-line
+
   // (pin pixel state removed — popup handled inside MapView)
 
   // Reset filter + selection + streaming state on dest change
@@ -406,6 +444,10 @@ export default function TripDetailPage() {
     setStarredOnly(false);
     setCategoryDropdownOpen(false);
     setScoreDropdownOpen(false);
+    setDeepInterestId(null);
+    setDeepSpots([]);
+    setDeepStreaming([]);
+    setDeepError(null);
   }, [selectedDest?.id]);
 
   /* ── Derived ────────────────────────────────────────────────────────────── */
@@ -903,9 +945,109 @@ export default function TripDetailPage() {
                     </div>
                   )}
 
-                  {/* ── Scrollable spot list ── */}
-                  {researchSubTab === 'discover' ? (
-                    /* Community — Coming Soon */
+                  {/* ── "Go deep" prompt — single category active, not yet in deep mode ── */}
+                  {researchSubTab === 'spots' && filterInterests.size === 1 && !deepInterestId && !isResearching && filteredSpots.length > 0 && (() => {
+                    const activeInterest = INTERESTS.find((i) => filterInterests.has(i.id));
+                    return activeInterest ? (
+                      <div style={{
+                        flexShrink: 0, padding: '7px 14px',
+                        background: 'color-mix(in oklch, var(--ink) 3%, var(--paper-2))',
+                        borderBottom: '1px solid var(--line)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                      }}>
+                        <span style={{ fontSize: 12, color: 'var(--muted)', fontStyle: 'italic', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {filteredSpots.length} curated {activeInterest.label.toLowerCase()} spots
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => triggerDeepResearch(activeInterest.id)}
+                          style={{
+                            flexShrink: 0, background: 'none', border: 'none',
+                            color: 'var(--terracotta)', fontSize: 12.5, fontWeight: 700,
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3,
+                            padding: '2px 0',
+                          }}
+                        >
+                          Show everything →
+                        </button>
+                      </div>
+                    ) : null;
+                  })()}
+
+                  {/* ── Deep browse lens ── */}
+                  {deepInterestId && (
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+                      {/* Lens header */}
+                      <div style={{
+                        flexShrink: 0, padding: '10px 14px',
+                        background: 'color-mix(in oklch, var(--terracotta) 8%, var(--paper-2))',
+                        borderBottom: '1px solid color-mix(in oklch, var(--terracotta) 20%, transparent)',
+                        display: 'flex', alignItems: 'center', gap: 10,
+                      }}>
+                        <button
+                          type="button"
+                          onClick={() => { setDeepInterestId(null); setDeepSpots([]); setDeepStreaming([]); setDeepError(null); }}
+                          style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 13, fontWeight: 700, padding: '2px 6px 2px 0', flexShrink: 0 }}
+                        >
+                          ←
+                        </button>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 9.5, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--terracotta)', marginBottom: 2 }}>
+                            Everything in {INTERESTS.find((i) => i.id === deepInterestId)?.label}
+                          </div>
+                          <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--muted)' }}>
+                            {deepLoading
+                              ? `${deepStreaming.length} found so far…`
+                              : `${deepSpots.length} places · sorted by hiddenness`}
+                          </div>
+                        </div>
+                        {deepLoading && (
+                          <div style={{ width: 14, height: 14, border: '2px solid var(--line)', borderTopColor: 'var(--terracotta)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                        )}
+                      </div>
+
+                      {/* Error state */}
+                      {deepError && (
+                        <div style={{ padding: '12px 14px', background: 'color-mix(in oklch, var(--error) 7%, transparent)', borderBottom: '1px solid color-mix(in oklch, var(--error) 20%, transparent)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                          <p style={{ fontSize: 12.5, color: 'var(--error)' }}>{deepError}</p>
+                          <button type="button" onClick={() => triggerDeepResearch(deepInterestId)} style={{ background: 'none', border: '1px solid color-mix(in oklch, var(--error) 30%, transparent)', borderRadius: 6, color: 'var(--error)', fontSize: 11, padding: '3px 8px', cursor: 'pointer', flexShrink: 0 }}>Retry</button>
+                        </div>
+                      )}
+
+                      {/* Spot list — same SpotCard, existing + flow */}
+                      <div className="spotlist">
+                        {(deepLoading ? deepStreaming : deepSpots)
+                          .slice()
+                          .sort((a, b) => (b.hiddennessScore ?? 1) - (a.hiddennessScore ?? 1))
+                          .map((spot) => (
+                            <SpotCard
+                              key={spot.id ?? spot.name}
+                              spot={spot}
+                              active={selectedSpotId === spot.id}
+                              onSelect={() => setSelectedSpotId(selectedSpotId === spot.id ? null : spot.id)}
+                              saved={savedIds.has(spot.id)}
+                              onToggleSave={toggleSave}
+                              onOpenDrawer={setDrawerSpot}
+                              onAddToDay={isPastTrip ? null : ((s) => { setQuickAddSpot(s); setQuickAddDay(days[0]?.id ?? ''); setQuickAddSlot('morning'); })}
+                              isPastTrip={isPastTrip}
+                            />
+                        ))}
+                        {deepLoading && deepStreaming.length === 0 && (
+                          <div className="skel">
+                            <div className="sk-med shimmer" />
+                            <div className="sk-lines">
+                              <div className="sk-l shimmer" style={{ width: '40%' }} />
+                              <div className="sk-l shimmer" style={{ width: '75%', height: 13 }} />
+                              <div className="sk-l shimmer" style={{ width: '30%', marginBottom: 0 }} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Curated / discover spot list (shown when NOT in deep mode) ── */}
+                  {!deepInterestId && researchSubTab === 'discover' && (
                     <div className="spotlist" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                       <div style={{ textAlign: 'center', padding: '48px 24px' }}>
                         <div style={{ fontSize: '2.8rem', marginBottom: 16, opacity: 0.7 }}>👥</div>
@@ -917,8 +1059,9 @@ export default function TripDetailPage() {
                         </p>
                       </div>
                     </div>
-                  ) : (
-                    /* Spots tab — AI research */
+                  )}
+
+                  {!deepInterestId && researchSubTab !== 'discover' && (
                     <div className="spotlist">
                       {/* Skeleton while streaming starts */}
                       {isResearching && streamingSpots.length === 0 && (
@@ -1012,7 +1155,7 @@ export default function TripDetailPage() {
                     }>
                       <MapView
                         key={selectedDest?.id ?? 'map'}
-                        spots={isResearching ? streamingSpots : filteredSpots}
+                        spots={deepInterestId ? (deepLoading ? deepStreaming : deepSpots) : isResearching ? streamingSpots : filteredSpots}
                         centerLat={selectedDest?.centerLat ?? spots.find(s => s.lat)?.lat}
                         centerLng={selectedDest?.centerLng ?? spots.find(s => s.lng)?.lng}
                         onSpotClick={handleSpotClick}
