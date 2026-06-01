@@ -611,7 +611,8 @@ function EventSuggestionCard({ event, onAdd }) {
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
 function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent }) {
-  const [open, setOpen] = useState(true);
+  const [open,       setOpen]       = useState(true);
+  const [eventsOpen, setEventsOpen] = useState(false); // collapsed by default
 
   const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
   const totalSpots    = allSpots.length;
@@ -679,7 +680,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
             />
           ))}
 
-          {/* ── Recurring events on this day ──────────────────────────── */}
+          {/* ── Recurring events on this day (collapsed by default) ────── */}
           {(() => {
             const dayOfWeek = day.planDate
               ? new Date(day.planDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' })
@@ -690,13 +691,33 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
             if (!dayEvents.length) return null;
             return (
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--border)' }}>
-                <div style={{
-                  fontSize: '0.6rem', fontFamily: 'var(--mono)', letterSpacing: '0.08em',
-                  textTransform: 'uppercase', color: 'var(--terracotta)', marginBottom: 8, fontWeight: 700,
-                }}>
-                  🎪 Recurring events on this {dayOfWeek}
-                </div>
-                {dayEvents.map((event, i) => (
+                {/* Toggle row — always visible */}
+                <button
+                  type="button"
+                  onClick={() => setEventsOpen((v) => !v)}
+                  style={{
+                    width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    background: 'none', border: 'none', cursor: 'pointer', padding: 0, marginBottom: eventsOpen ? 10 : 0,
+                  }}
+                >
+                  <span style={{
+                    fontSize: '0.6rem', fontFamily: 'var(--mono)', letterSpacing: '0.08em',
+                    textTransform: 'uppercase', color: 'var(--terracotta)', fontWeight: 700,
+                    display: 'flex', alignItems: 'center', gap: 5,
+                  }}>
+                    🎪 {dayEvents.length} recurring event{dayEvents.length !== 1 ? 's' : ''} on this {dayOfWeek}
+                  </span>
+                  <svg
+                    width="11" height="11" viewBox="0 0 24 24" fill="none"
+                    stroke="var(--terracotta)" strokeWidth={2.5} strokeLinecap="round"
+                    style={{ transform: eventsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s', flexShrink: 0 }}
+                  >
+                    <path d="M6 9l6 6 6-6"/>
+                  </svg>
+                </button>
+
+                {/* Event cards — shown only when expanded */}
+                {eventsOpen && dayEvents.map((event, i) => (
                   <EventSuggestionCard
                     key={event.id ?? i}
                     event={event}
