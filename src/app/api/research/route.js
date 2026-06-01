@@ -8,6 +8,12 @@
 export const maxDuration = 300;
 
 // ---------------------------------------------------------------------------
+// Quality gate — drops spots the model itself rates as low-confidence
+// Tune this constant if the gate is too aggressive or too permissive.
+// ---------------------------------------------------------------------------
+const CONFIDENCE_THRESHOLD = 0.4;
+
+// ---------------------------------------------------------------------------
 // Prompts — three category-focused passes
 // ---------------------------------------------------------------------------
 
@@ -28,9 +34,11 @@ const JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanation, no 
       "name": "string",
       "description": "2–3 sentences describing the place",
       "whyHidden": "1 sentence explaining why most tourists miss it (null for tourist staples)",
+      "whyWorthIt": "1 concrete, specific reason to go — a dish to order, the room to ask for, the best time to arrive, a specific experience that can't be found elsewhere. NOT generic praise like 'great atmosphere'. null if you don't know a specific detail.",
       "hiddennessReason": "short phrase e.g. 'locals-only bar' or 'off the tourist map'",
       "hiddennessScore": <integer 1–10>,
       "hiddennessLabel": "Tourist Staple|Worth Knowing|Hidden Gem|Local Secret|Off the Map",
+      "editorialConfidence": <float 0.0–1.0>,
       "category": "food|museum|park|bar|cafe|market|landmark|art|nature|shopping|spa|music|other",
       "interests": ["hiking","food","museums","art","nightlife","beaches","markets","monuments","photography","relaxation","music","streets","offbeat","outdoor"],
       "entryPrice": <number in EUR, 0 if free, null if unknown>,
@@ -54,6 +62,13 @@ Hiddenness scoring guide:
 6–7: Known to Reddit, niche travel blogs, expats
 8–9: Genuine local knowledge, rarely on tourist radar
 10: Requires specific insider knowledge to find
+
+editorialConfidence scoring guide (SEPARATE axis from hiddenness — a famous place can score high here):
+0.9–1.0: You are highly confident this is a real, distinctive, genuinely worthwhile place — specific details, clear character, a traveller would be glad they went
+0.6–0.8: Solid pick — real place, worth visiting, description is accurate but perhaps slightly generic
+0.4–0.5: Moderate confidence — place likely exists but description is vague, generic, or you're uncertain it's genuinely distinctive
+0.1–0.3: Low confidence — filler entry, very uncertain the place exists or is notable, generic category placeholder
+Use 0.5 only as a genuine middle estimate, not as a lazy default. Be honest: if you're not sure this spot deserves a traveller's time, score it low.
 
 For closureStatus: research the REAL current status. Use "temporarily_closed" for places known to be closed for renovation or seasonal pause. Use "permanently_closed" for places that have shut down. Default to "open" only when confident the place is currently operating.
 For openingHours, use 24-hour "HH:MM-HH:MM" format per day, or "closed" for closed days.
@@ -537,15 +552,30 @@ export async function POST(request) {
         send('status', { message: `Pass 6 complete (${pass6.length} spots) — merging and deduplicating…` });
 
         // ── Merge + deduplicate ───────────────────────────────────────────────
-        const totalGenerated   = pass1.length + pass2.length + pass3.length + pass4.length + pass5.length + pass6.length;
-        const rawMerged        = mergeAndDeduplicate([pass1, pass2, pass3, pass4, pass5, pass6]);
+        const totalGenerated    = pass1.length + pass2.length + pass3.length + pass4.length + pass5.length + pass6.length;
+        const rawMerged         = mergeAndDeduplicate([pass1, pass2, pass3, pass4, pass5, pass6]);
+        const duplicatesRemoved = totalGenerated - rawMerged.length;
+
+        // ── Quality gate ─────────────────────────────────────────────────────
+        // Drop spots the model itself rated below the confidence threshold.
+        // Spots missing the field (e.g. from old cached data) pass through at 0.5.
+        const afterQuality      = rawMerged.filter(s => (s.editorialConfidence ?? 0.5) >= CONFIDENCE_THRESHOLD);
+        const droppedByQuality  = rawMerged.length - afterQuality.length;
+        if (droppedByQuality > 0) {
+          console.log(
+            `[research] Quality gate: dropped ${droppedByQuality}/${rawMerged.length} spots ` +
+            `(editorialConfidence < ${CONFIDENCE_THRESHOLD}) for ${city}`
+          );
+        } else {
+          console.log(`[research] Quality gate: all ${rawMerged.length} spots passed (threshold ${CONFIDENCE_THRESHOLD})`);
+        }
+
         // Strip any lat/lng the AI may have returned — coordinates come from Mapbox only
-        const spots            = rawMerged.map(({ lat, lng, latitude, longitude, ...rest }) => rest);
-        const duplicatesRemoved = totalGenerated - spots.length;
+        const spots             = afterQuality.map(({ lat, lng, latitude, longitude, ...rest }) => rest);
 
         if (!spots.length) throw new Error('AI returned no spots. Please try again.');
 
-        send('status', { message: `${spots.length} unique spots (${duplicatesRemoved} duplicates removed) — geocoding locations…` });
+        send('status', { message: `${spots.length} spots after quality filter (${duplicatesRemoved} dupes + ${droppedByQuality} quality drops) — geocoding locations…` });
         send('total',  { count: spots.length });
 
         // ── Geocode ───────────────────────────────────────────────────────────
@@ -598,7 +628,7 @@ export async function POST(request) {
           if (skipped > 0) {
             console.log(`[/api/research] ${city}: sent=${sent} skipped=${skipped} (geocoding failed)`);
           }
-          send('summary', { generated: totalGenerated, unique: spots.length, geocoded: sent, dropped: skipped, city });
+          send('summary', { generated: totalGenerated, unique: spots.length, geocoded: sent, dropped: skipped, qualityDropped: droppedByQuality, city });
           send('done',    { total: sent });
         }
       } catch (err) {

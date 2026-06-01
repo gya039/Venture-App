@@ -881,6 +881,10 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 .dr-why  { margin: 18px 0; padding: 16px 18px; border-radius: 14px; background: color-mix(in oklch, var(--sc) 8%, var(--card)); border: 1px solid color-mix(in oklch, var(--sc) 26%, var(--line)); }
 .dr-why .wl { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--sc); display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
 .dr-why p   { margin: 0; font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; }
+/* "Why it's worth it" — same structure, olive/positive signal instead of tier colour */
+.dr-worthit { margin: 0 0 18px; padding: 16px 18px; border-radius: 14px; background: color-mix(in oklch, var(--olive) 7%, var(--card)); border: 1px solid color-mix(in oklch, var(--olive) 22%, var(--line)); }
+.dr-worthit .wl { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--olive); display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.dr-worthit p   { margin: 0; font-size: 14.5px; color: var(--ink-soft); line-height: 1.55; }
 .dr-desc { font-size: 15px; color: var(--ink-soft); line-height: 1.6; margin: 0 0 18px; }
 .dr-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-bottom: 18px; }
 .dr-fact { background: var(--card); padding: 13px 15px; }

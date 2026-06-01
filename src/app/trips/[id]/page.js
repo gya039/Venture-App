@@ -358,7 +358,11 @@ export default function TripDetailPage() {
         {
           onSpot:    (spot) => { setStreamingSpots((prev) => [...prev, spot]); setJustFoundId(spot.id ?? spot.name); spotCount++; },
           onStatus:  (msg)  => setResearchStatus(msg),
-          onSummary: (s)    => toast.info?.(`${s.unique} spots found · ${s.geocoded} mapped${s.dropped > 0 ? ` · ${s.dropped} ungeocodeable` : ''}`),
+          onSummary: (s)    => toast.info?.(
+            `${s.geocoded} spots mapped` +
+            (s.qualityDropped > 0 ? ` · ${s.qualityDropped} quality-filtered` : '') +
+            (s.dropped > 0 ? ` · ${s.dropped} ungeocodeable` : '')
+          ),
         },
       );
       await refetch();
