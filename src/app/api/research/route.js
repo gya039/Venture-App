@@ -80,7 +80,7 @@ IMPORTANT: Your response must be complete, valid, parseable JSON. If you are app
 // Events mode — recurring events for Glasgow (Phase 3, city-gated)
 // ---------------------------------------------------------------------------
 
-const EVENTS_ENABLED_CITIES = ['Glasgow']; // expand only after Glasgow proves reliable
+// Events research is enabled for all cities
 
 /** Reuses the main JSON_SCHEMA key ("spots") so the geocoding pipeline is identical */
 const EVENTS_JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanation, no code fences:
@@ -658,11 +658,6 @@ export async function POST(request) {
 
         // ══ Events mode: recurring events for one city (Glasgow-gated) ══════
         if (mode === 'events') {
-          if (!EVENTS_ENABLED_CITIES.some(c => c.toLowerCase() === city.toLowerCase())) {
-            send('error', { message: `Events research is currently only available for: ${EVENTS_ENABLED_CITIES.join(', ')}` });
-            return;
-          }
-
           send('status', { message: `Researching recurring events in ${city}…` });
           const rawEvents = await callOpenAI(buildEventsPrompt(city));
           console.log(`[research/events] ${city}: AI returned ${rawEvents.length} events`);

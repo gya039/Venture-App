@@ -555,10 +555,8 @@ export async function cacheDeepSpots(city, category, spots) {
 // City Events (recurring events, Glasgow-gated) — cityEvents/{city}/events/{id}
 // ---------------------------------------------------------------------------
 
-/** Cities for which events research is enabled */
-export const EVENTS_ENABLED_CITIES = ['Glasgow'];
-export const isEventsCity = (city) =>
-  EVENTS_ENABLED_CITIES.some((c) => c.toLowerCase() === (city ?? '').toLowerCase());
+/** Events research is now enabled for all cities */
+export const isEventsCity = (_city) => true;
 
 export async function getCityEvents(city) {
   const snap = await getDocs(collection(db, 'cityEvents', city.toLowerCase(), 'events'));
