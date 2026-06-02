@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
 import { useSavedSpots } from '@/hooks/useSavedSpots';
-import { getUser, getDayPlans, getPublicTripsLike } from '@/lib/db';
+import { getUser, getDayPlans, getPublicTripsLike, deleteTrip } from '@/lib/db';
 import TripCard from '@/components/TripCard';
 import TopNav from '@/components/TopNav';
 import InstallBanner from '@/components/InstallBanner';
@@ -175,8 +175,10 @@ function StatsStrip({ trips, savedCount }) {
 }
 
 /* ── Past trips (collapsible 2-col grid) ──────────────────────── */
-function PastSection({ past }) {
-  const [open, setOpen] = useState(false);
+function PastSection({ past, onDelete }) {
+  const [open,       setOpen]       = useState(false);
+  const [confirmId,  setConfirmId]  = useState(null); // tripId being confirmed
+  const [deletingId, setDeletingId] = useState(null);
 
   return (
     <div>
@@ -198,22 +200,75 @@ function PastSection({ past }) {
           const label = t.name ?? (t.isMultiCity
             ? t.destinations.map((d) => d.city).join(' · ')
             : first.city);
+          const isConfirming = confirmId === t.id;
+          const isDeleting   = deletingId === t.id;
+
           return (
-            <Link key={t.id} href={`/trips/${t.id}`} className="past-row">
-              <span className="pr-flag">{flagEmoji(first.countryCode)}</span>
-              <span className="pr-main">
-                <span className="pr-dest">{label}</span>
-                <div className="pr-meta">
-                  {fmtDate(first.startDate)}{first.endDate && ` · ${fmtDate(first.endDate)}`}
+            <div key={t.id} style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <Link href={`/trips/${t.id}`} className="past-row" style={{ flex: 1 }}>
+                <span className="pr-flag">{flagEmoji(first.countryCode)}</span>
+                <span className="pr-main">
+                  <span className="pr-dest">{label}</span>
+                  <div className="pr-meta">
+                    {fmtDate(first.startDate)}{first.endDate && ` · ${fmtDate(first.endDate)}`}
+                  </div>
+                </span>
+                <span className="pr-done">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 12l5 5L20 6" />
+                  </svg>
+                  Completed
+                </span>
+              </Link>
+
+              {/* Delete control — inline after the row */}
+              {!isConfirming ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmId(t.id)}
+                  title="Delete trip"
+                  style={{
+                    flexShrink: 0, marginLeft: 6, width: 26, height: 26, borderRadius: '50%',
+                    border: '1px solid var(--line)', background: 'transparent',
+                    color: 'var(--muted)', fontSize: '1rem', lineHeight: 1,
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.borderColor = '#dc2626'; e.currentTarget.style.color = '#dc2626'; }}
+                  onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--muted)'; }}
+                >
+                  ×
+                </button>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 6, flexShrink: 0 }}>
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Delete?</span>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmId(null)}
+                    style={{ background: 'none', border: 'none', fontSize: 12, color: 'var(--muted)', cursor: 'pointer', padding: '2px 4px' }}
+                  >
+                    No
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeleting}
+                    onClick={async () => {
+                      setDeletingId(t.id);
+                      try { await onDelete?.(t.id); } catch {}
+                      setDeletingId(null);
+                      setConfirmId(null);
+                    }}
+                    style={{
+                      background: 'none', border: 'none', fontSize: 12, fontWeight: 700,
+                      color: '#dc2626', cursor: isDeleting ? 'default' : 'pointer',
+                      padding: '2px 4px', opacity: isDeleting ? 0.5 : 1,
+                    }}
+                  >
+                    {isDeleting ? '…' : 'Yes'}
+                  </button>
                 </div>
-              </span>
-              <span className="pr-done">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M4 12l5 5L20 6" />
-                </svg>
-                Completed
-              </span>
-            </Link>
+              )}
+            </div>
           );
         })}
       </div>
@@ -557,7 +612,7 @@ function Dashboard({ user }) {
                   </button>
                 </div>
                 <div className="shelf">
-                  {restUpcoming.map((t) => <TripCard key={t.id} trip={t} />)}
+                  {restUpcoming.map((t) => <TripCard key={t.id} trip={t} onDelete={() => deleteTrip(t.id)} />)}
                 </div>
               </section>
             )}
@@ -565,7 +620,7 @@ function Dashboard({ user }) {
             {/* Past trips */}
             {past.length > 0 && (
               <section className="section">
-                <PastSection past={past} />
+                <PastSection past={past} onDelete={(id) => deleteTrip(id)} />
               </section>
             )}
 
