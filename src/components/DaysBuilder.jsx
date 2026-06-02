@@ -495,7 +495,7 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
                 ? 'color-mix(in srgb, var(--terracotta) 75%, transparent)'
                 : isOver ? 'var(--accent)' : 'color-mix(in srgb, var(--muted) 55%, transparent)',
             }}>
-              {isPlacingActive ? '📌 Tap to add here' : isOver ? '📌 Drop here' : '+ Drag a spot here'}
+              {isPlacingActive ? '📌 Tap to add here' : isOver ? '📌 Drop here' : 'Tap + to add, or drag here'}
             </span>
           </div>
         )}
@@ -1174,7 +1174,7 @@ export default function DaysBuilder({
       <div className="empty-state">
         <div className="empty-state-icon">📅</div>
         <h3>No day plans yet</h3>
-        <p>Create a trip with dates to auto-generate day slots, then drag your starred spots into them.</p>
+        <p>Create a trip with dates to auto-generate day slots, then tap + on any spot to add it.</p>
       </div>
     );
   }
@@ -1524,7 +1524,7 @@ export default function DaysBuilder({
               <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
                 <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>📅</div>
                 <p style={{ fontSize: '0.88rem', lineHeight: 1.7, marginBottom: 18, maxWidth: 320, margin: '0 auto 18px' }}>
-                  Star spots in Research, then drag them from the sidebar into your day slots.
+                  Star spots in Research, then tap + on any spot to add it to your plan.
                 </p>
                 <button
                   type="button"
