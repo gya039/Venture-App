@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from './useAuth';
 import { getDayPlans, getDayPlanSpots, getCachedSpots } from '@/lib/db';
 
@@ -22,9 +22,13 @@ export function useDayPlanner(destId, city) {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
 
+  // Track whether we've ever completed a successful load for this destination.
+  // Subsequent refetches (after adding spots) update silently — no skeleton flash.
+  const hasLoadedRef = useRef(false);
+
   const fetchData = async () => {
     if (!destId || !city || !authReady || !user) { setLoading(false); return; }
-    setLoading(true);
+    if (!hasLoadedRef.current) setLoading(true); // skeleton only on first load
     setError(null);
 
     try {
@@ -60,6 +64,7 @@ export function useDayPlanner(destId, city) {
         return { ...plan, spots, totalCost };
       }));
 
+      hasLoadedRef.current = true;
       setDays(assembled);
     } catch (err) {
       console.error('useDayPlanner error:', err);
@@ -68,6 +73,10 @@ export function useDayPlanner(destId, city) {
       setLoading(false);
     }
   };
+
+  // Reset the "has loaded" flag whenever the destination changes so the
+  // skeleton shows correctly on the first load for a new city.
+  useEffect(() => { hasLoadedRef.current = false; }, [destId]);
 
   useEffect(() => { fetchData(); }, [destId, city, authReady, user?.uid]); // eslint-disable-line
 
