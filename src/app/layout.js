@@ -3,6 +3,7 @@ import './globals.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { Analytics } from '@vercel/analytics/react';
 import DevSwKiller from '@/components/DevSwKiller';
+import SwRegister from '@/components/SwRegister';
 import ToastProvider from '@/components/ToastProvider';
 import TripModalProvider from '@/components/TripModalProvider';
 import OfflineBanner from '@/components/OfflineBanner';
@@ -93,7 +94,7 @@ export default function RootLayout({ children }) {
           </TripModalProvider>
         </ToastProvider>
         <Analytics />
-        {process.env.NODE_ENV === 'development' && <DevSwKiller />}
+        {process.env.NODE_ENV === 'development' ? <DevSwKiller /> : <SwRegister />}
       </body>
     </html>
   );
