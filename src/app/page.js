@@ -30,12 +30,14 @@ function daysUntil(dateStr) {
 }
 
 /* ── Hero next-trip card ───────────────────────────────────────── */
-function TripHero({ trip }) {
+function TripHero({ trip, onDelete }) {
   const first = trip.destinations?.[0];
   const last  = trip.destinations?.[trip.destinations.length - 1];
   if (!first) return null;
 
   const { user } = useAuth();
+  const [confirming, setConfirming] = useState(false);
+  const [deleting,   setDeleting]   = useState(false);
   const days      = daysUntil(first.startDate);
   const displayCity = trip.isMultiCity
     ? trip.destinations.map((d) => d.city).join(' · ')
@@ -73,7 +75,55 @@ function TripHero({ trip }) {
     : null;
 
   return (
-    <div className="hero-trip">
+    <div className="hero-trip" style={{ position: 'relative' }}>
+      {confirming && (
+        <div
+          style={{
+            position: 'absolute', inset: 0, zIndex: 20,
+            background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)',
+            borderRadius: 'inherit',
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24,
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <p style={{ color: '#fff', fontWeight: 700, fontSize: 15, textAlign: 'center', lineHeight: 1.4, margin: 0 }}>
+            Delete {displayCity}?
+          </p>
+          <p style={{ color: 'rgba(255,255,255,0.55)', fontSize: 12, textAlign: 'center', margin: 0 }}>
+            This can't be undone.
+          </p>
+          <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            <button
+              type="button"
+              onClick={() => setConfirming(false)}
+              style={{
+                padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
+                border: '1px solid rgba(255,255,255,0.25)', background: 'transparent',
+                color: '#fff', cursor: 'pointer',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={async (e) => {
+                e.stopPropagation();
+                setDeleting(true);
+                try { await onDelete?.(); } catch (err) { setDeleting(false); }
+              }}
+              style={{
+                padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 700,
+                border: 'none', background: '#dc2626', color: '#fff',
+                cursor: deleting ? 'default' : 'pointer', opacity: deleting ? 0.6 : 1,
+              }}
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </div>
+        </div>
+      )}
       {/* ── Left panel ── */}
       <div className="hero-left">
         <div className="hero-eyebrow">Next departure</div>
@@ -126,6 +176,21 @@ function TripHero({ trip }) {
             <Link href={`/trips/${trip.id}`} className="btn btn-primary">Open trip →</Link>
             <Link href={`/trips/${trip.id}/share`} className="btn btn-secondary">Share itinerary</Link>
           </div>
+
+          {onDelete && (
+            <button
+              type="button"
+              onClick={() => setConfirming(true)}
+              style={{
+                marginTop: 8, background: 'transparent', border: 'none',
+                color: 'var(--muted)', fontSize: 'var(--text-xs)', fontWeight: 600,
+                cursor: 'pointer', padding: 0,
+                textDecoration: 'underline', textUnderlineOffset: 3,
+              }}
+            >
+              Delete trip
+            </button>
+          )}
         </div>
       </div>
 
@@ -141,7 +206,10 @@ function TripHero({ trip }) {
             </span>
           </div>
         )}
-        <span className="hero-photo-lab">[ photo · {first.city ?? 'city'} ]</span>
+        {trip.coverPhoto
+          ? <img src={trip.coverPhoto} alt={first.city} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', borderRadius: 'inherit' }} onError={e => { e.currentTarget.style.display = 'none'; }} />
+          : <span className="hero-photo-lab">[ photo · {first.city ?? 'city'} ]</span>
+        }
       </div>
     </div>
   );
@@ -221,51 +289,73 @@ function PastSection({ past, onDelete }) {
                 </span>
               </Link>
 
-              {/* Delete control — inline after the row */}
+              {/* Delete control */}
               {!isConfirming ? (
                 <button
                   type="button"
                   onClick={() => setConfirmId(t.id)}
-                  title="Delete trip"
                   style={{
-                    flexShrink: 0, marginLeft: 6, width: 26, height: 26, borderRadius: '50%',
-                    border: '1px solid var(--line)', background: 'transparent',
-                    color: 'var(--muted)', fontSize: '1rem', lineHeight: 1,
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    transition: 'all 0.15s',
+                    flexShrink: 0, marginLeft: 8,
+                    background: 'transparent', border: '1px solid var(--line)',
+                    borderRadius: 6, color: 'var(--muted)',
+                    fontSize: 'var(--text-xs)', fontWeight: 600,
+                    cursor: 'pointer', padding: '4px 8px',
+                    transition: 'all 0.15s', whiteSpace: 'nowrap',
                   }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = '#dc2626'; e.currentTarget.style.color = '#dc2626'; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--muted)'; }}
                 >
-                  ×
+                  Delete trip
                 </button>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginLeft: 6, flexShrink: 0 }}>
-                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>Delete?</span>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmId(null)}
-                    style={{ background: 'none', border: 'none', fontSize: 12, color: 'var(--muted)', cursor: 'pointer', padding: '2px 4px' }}
-                  >
-                    No
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isDeleting}
-                    onClick={async () => {
-                      setDeletingId(t.id);
-                      try { await onDelete?.(t.id); } catch {}
-                      setDeletingId(null);
-                      setConfirmId(null);
-                    }}
-                    style={{
-                      background: 'none', border: 'none', fontSize: 12, fontWeight: 700,
-                      color: '#dc2626', cursor: isDeleting ? 'default' : 'pointer',
-                      padding: '2px 4px', opacity: isDeleting ? 0.5 : 1,
-                    }}
-                  >
-                    {isDeleting ? '…' : 'Yes'}
-                  </button>
+                <div
+                  style={{
+                    position: 'absolute', inset: 0, zIndex: 10,
+                    background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(4px)',
+                    borderRadius: 8,
+                    display: 'flex', flexDirection: 'column',
+                    alignItems: 'center', justifyContent: 'center',
+                    gap: 8, padding: 16,
+                  }}
+                  onClick={e => e.stopPropagation()}
+                >
+                  <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, textAlign: 'center', lineHeight: 1.4, margin: 0 }}>
+                    Delete {label}?
+                  </p>
+                  <p style={{ color: 'rgba(255,255,255,0.55)', fontSize: 11, textAlign: 'center', margin: 0 }}>
+                    This can't be undone.
+                  </p>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmId(null)}
+                      style={{
+                        padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                        border: '1px solid rgba(255,255,255,0.25)', background: 'transparent',
+                        color: '#fff', cursor: 'pointer',
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeleting}
+                      onClick={async () => {
+                        setDeletingId(t.id);
+                        try { await onDelete?.(t.id); } catch (err) {}
+                        setDeletingId(null);
+                        setConfirmId(null);
+                      }}
+                      style={{
+                        padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 700,
+                        border: 'none', background: '#dc2626', color: '#fff',
+                        cursor: isDeleting ? 'default' : 'pointer',
+                        opacity: isDeleting ? 0.5 : 1,
+                      }}
+                    >
+                      {isDeleting ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -594,7 +684,7 @@ function Dashboard({ user }) {
         {!loading && trips.length > 0 && (
           <>
             {/* Hero next trip */}
-            {nextTrip && <TripHero trip={nextTrip} />}
+            {nextTrip && <TripHero key={nextTrip.id} trip={nextTrip} onDelete={() => deleteTrip(nextTrip.id)} />}
 
             {/* Stats */}
             <StatsStrip trips={trips} savedCount={savedIds.size} />

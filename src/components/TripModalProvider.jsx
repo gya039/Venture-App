@@ -81,7 +81,8 @@ export default function TripModalProvider({ children }) {
   const [interests, setInterests] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
-  const [seedInterests, setSeedInterests] = useState([]); // from onboarding
+  const [seedInterests,  setSeedInterests]  = useState([]); // from onboarding
+  const [startedAtDates, setStartedAtDates] = useState(false); // entered from city preview
 
   // Mapbox autocomplete
   const [suggestions, setSuggestions] = useState([]);
@@ -105,10 +106,22 @@ export default function TripModalProvider({ children }) {
   }, [city, templateCity]);
 
   /* ── Public API ─────────────────────────────────────────────────────────── */
-  const openModal = useCallback((prefill = '', prefillInterests = []) => {
-    setCity(prefill); setCC('');
+  /**
+   * openModal(city, interests, opts)
+   *   opts.startAtDates  – skip the Destination step; open straight on Dates
+   *   opts.countryCode   – pre-set country code (e.g. from city preview URL param)
+   */
+  const openModal = useCallback((prefill = '', prefillInterests = [], {
+    startAtDates = false,
+    countryCode  = '',
+  } = {}) => {
+    setCity(prefill);
+    setCC(countryCode);
     setStart(''); setEnd('');
-    setInterests(prefillInterests); setStep(0); setError('');
+    setInterests(prefillInterests);
+    setStep(startAtDates ? 1 : 0);
+    setStartedAtDates(startAtDates);
+    setError('');
     setSeedInterests(prefillInterests);
     setSuggestions([]); setShowSugg(false);
     setTemplates([]); setTemplateCity('');
@@ -253,10 +266,12 @@ export default function TripModalProvider({ children }) {
           <div style={{ padding: '8px 24px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div>
               <h2 style={{ fontSize: '1.1rem', fontWeight: 800, letterSpacing: '-0.025em' }}>
-                {step === 3 ? `Review — ${city}` : 'New Trip'}
+                {step === 3 ? `Review — ${city}` : startedAtDates ? city : 'New Trip'}
               </h2>
               <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                {STEPS[step]} · Step {step + 1} of {STEPS.length}
+                {startedAtDates
+                  ? `${STEPS[step]} · Step ${step} of ${STEPS.length - 1}`
+                  : `${STEPS[step]} · Step ${step + 1} of ${STEPS.length}`}
               </p>
             </div>
             <button
@@ -272,19 +287,25 @@ export default function TripModalProvider({ children }) {
             </button>
           </div>
 
-          {/* Step progress bar */}
-          <div style={{ display: 'flex', gap: 4, padding: '0 24px 18px' }}>
-            {STEPS.map((_, i) => (
-              <div
-                key={i}
-                style={{
-                  flex: 1, height: 3, borderRadius: 3,
-                  background: i <= step ? 'var(--accent)' : 'var(--border)',
-                  transition: 'background 0.25s',
-                }}
-              />
-            ))}
-          </div>
+          {/* Step progress bar — 3 segments when started from city preview */}
+          {(() => {
+            const bars     = startedAtDates ? STEPS.slice(1) : STEPS;
+            const barIndex = startedAtDates ? step - 1 : step;
+            return (
+              <div style={{ display: 'flex', gap: 4, padding: '0 24px 18px' }}>
+                {bars.map((_, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      flex: 1, height: 3, borderRadius: 3,
+                      background: i <= barIndex ? 'var(--accent)' : 'var(--border)',
+                      transition: 'background 0.25s',
+                    }}
+                  />
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Scrollable body */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '0 24px' }}>
@@ -555,7 +576,7 @@ export default function TripModalProvider({ children }) {
                 </div>
 
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
-                  ✨ We'll run AI research immediately and surface hidden gems specific to {city}. This typically takes 15–25 seconds.
+                  ✨ We'll run AI research immediately and surface hidden gems specific to {city}. Research runs 6 specialist passes in parallel — typically ready in 45–90 seconds.
                 </p>
               </div>
             )}
@@ -582,7 +603,7 @@ export default function TripModalProvider({ children }) {
             borderTop: '1px solid var(--border)',
             display: 'flex', gap: 10, flexShrink: 0,
           }}>
-            {step > 0 && (
+            {step > 0 && !(startedAtDates && step === 1) && (
               <button
                 type="button"
                 onClick={back}

@@ -173,6 +173,19 @@ export const CITY_PASSES = {
     coverageNote: 'Free entry to 89 attractions + metro, train & bus',
     link: 'https://www.copenhagencard.com',
   },
+
+  // ── Edinburgh ──────────────────────────────────────────────────────────
+  Edinburgh: {
+    name: 'Royal Edinburgh Ticket',
+    emoji: '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
+    tiers: [
+      { days: 3, price: 43, label: '3 days' },
+    ],
+    includesTransport: false,
+    transportValue: 0,
+    coverageNote: 'Skip-the-line entry: Edinburgh Castle + Palace of Holyroodhouse',
+    link: 'https://www.edinburghcastle.scot/royal-edinburgh-ticket',
+  },
 };
 
 /**

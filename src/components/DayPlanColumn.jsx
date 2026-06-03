@@ -22,6 +22,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { updateDayPlanSpotSlot } from '@/lib/db';
+import { formatPrice, getNumericPrice } from '@/lib/pricing';
 
 /* ── Constants ────────────────────────────────────────────────────────────── */
 const SLOTS = ['morning', 'afternoon', 'evening'];
@@ -103,13 +104,13 @@ function SpotRow({ spot, tripId, dragHandleProps = {}, isDragging = false }) {
       {/* Price + link arrow */}
       {!isDragging && (
         <>
-          {spot.entryPrice != null ? (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>
-              €{spot.entryPrice}
-            </span>
-          ) : (
-            <span style={{ fontSize: '0.7rem', color: 'var(--teal)', flexShrink: 0 }}>Free</span>
-          )}
+          {(() => {
+            const p = formatPrice(spot);
+            if (p.priceType === 'free') return <span style={{ fontSize: '0.7rem', color: 'var(--teal)', flexShrink: 0 }}>Free</span>;
+            if (p.priceType === 'pass') return <span style={{ fontSize: '0.7rem', color: 'var(--t5, #f59e0b)', flexShrink: 0 }}>Pass</span>;
+            if (p.priceType === 'paid') return <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>{p.label}</span>;
+            return null; // unknown → omit in compact column chip
+          })()}
           <Link
             href={href}
             style={{ color: 'var(--text-muted)', fontSize: '0.85rem', flexShrink: 0, lineHeight: 1 }}
@@ -310,7 +311,7 @@ export default function DayPlanColumn({ day, tripId, onAddSpot }) {
 
   const dayLabel  = fmtDate(day.planDate);
   const totalSpots = SLOTS.reduce((n, s) => n + slots[s].length, 0);
-  const totalCost  = SLOTS.flatMap((s) => slots[s]).reduce((sum, s) => sum + (s.entryPrice ?? 0), 0);
+  const totalCost  = SLOTS.flatMap((s) => slots[s]).reduce((sum, s) => sum + getNumericPrice(s), 0);
 
   return (
     <div style={{

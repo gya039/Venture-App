@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { getHiddennessLevel, HIDDENNESS_LEVELS } from '@/constants/hiddenness';
 import { INTERESTS } from '@/constants/interests';
+import { formatPrice } from '@/lib/pricing';
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
 
@@ -323,12 +324,20 @@ export default function MapView({
     tier.textContent = `${level.label} · ${spot.hiddennessScore}/10`;
     meta.appendChild(tier);
 
-    if (spot.entryPrice != null) {
-      const price = document.createElement('span');
-      price.className = 'vpc-price';
-      price.textContent = spot.entryPrice === 0 ? 'Free' : `€${spot.entryPrice}`;
-      if (spot.entryPrice === 0) price.classList.add('free');
-      meta.appendChild(price);
+    const priceInfo = formatPrice(spot);
+    if (priceInfo.priceType !== 'unknown') {
+      const priceEl = document.createElement('span');
+      priceEl.className = 'vpc-price';
+      if (priceInfo.priceType === 'free') {
+        priceEl.textContent = 'Free';
+        priceEl.classList.add('free');
+      } else if (priceInfo.priceType === 'pass') {
+        priceEl.textContent = 'Pass';
+        priceEl.classList.add('pass');
+      } else {
+        priceEl.textContent = priceInfo.label;
+      }
+      meta.appendChild(priceEl);
     }
     root.appendChild(meta);
 

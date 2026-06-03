@@ -12,14 +12,18 @@ import { getSavedSpots, saveSpot, unsaveSpot } from '@/lib/db';
  *   loading    {boolean}
  */
 export function useSavedSpots(userId) {
-  const [savedIds, setSavedIds] = useState(new Set());
-  const [loading,  setLoading]  = useState(true);
+  const [savedIds,   setSavedIds]   = useState(new Set());
+  const [savedSpots, setSavedSpots] = useState([]);   // full objects — used for per-city counts
+  const [loading,    setLoading]    = useState(true);
 
   useEffect(() => {
     if (!userId) { setLoading(false); return; }
     setLoading(true);
     getSavedSpots(userId)
-      .then((spots) => setSavedIds(new Set(spots.map((s) => s.spotId).filter(Boolean))))
+      .then((spots) => {
+        setSavedSpots(spots);
+        setSavedIds(new Set(spots.map((s) => s.spotId).filter(Boolean)));
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, [userId]);
@@ -27,12 +31,25 @@ export function useSavedSpots(userId) {
   const toggle = useCallback(async (spot, wantSaved) => {
     if (!userId || !spot?.id) return;
 
-    // Optimistic update
+    // Optimistic update — keep both in sync
     setSavedIds((prev) => {
       const next = new Set(prev);
       if (wantSaved) next.add(spot.id);
       else next.delete(spot.id);
       return next;
+    });
+    setSavedSpots((prev) => {
+      if (wantSaved) {
+        if (prev.some(s => s.spotId === spot.id)) return prev;
+        return [...prev, {
+          spotId:          spot.id,
+          city:            spot.city,
+          name:            spot.name,
+          hiddennessScore: spot.hiddennessScore,
+          category:        spot.category,
+        }];
+      }
+      return prev.filter(s => s.spotId !== spot.id);
     });
 
     try {
@@ -47,8 +64,12 @@ export function useSavedSpots(userId) {
         else next.add(spot.id);
         return next;
       });
+      setSavedSpots((prev) => {
+        if (wantSaved) return prev.filter(s => s.spotId !== spot.id);
+        return prev;
+      });
     }
   }, [userId]);
 
-  return { savedIds, toggle, loading };
+  return { savedIds, savedSpots, toggle, loading };
 }

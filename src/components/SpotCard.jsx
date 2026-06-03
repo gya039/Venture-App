@@ -5,6 +5,7 @@ import { getHiddennessLevel } from '@/constants/hiddenness';
 import { INTERESTS } from '@/constants/interests';
 import { track } from '@/lib/analytics';
 import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
+import { formatPrice } from '@/lib/pricing';
 import ScoreMedallion from '@/components/ScoreMedallion';
 
 /**
@@ -72,9 +73,7 @@ export default function SpotCard({
     if (next) track('spot_starred', { spotId: spot.id, city: spot.city, hiddennessScore: score });
   }
 
-  const priceLabel = spot?.entryPrice != null
-    ? `€${spot.entryPrice}`
-    : null;
+  const price = formatPrice(spot);
 
   return (
     <div
@@ -120,15 +119,28 @@ export default function SpotCard({
             <span className="sc-saved">★ {savesCount} saved</span>
           )}
           {/* Compact meta: price · hours */}
-          {(priceLabel || (todayHrs && !isClosed)) && (
-            <span className="sc-saved">
-              {priceLabel ? ` · ${priceLabel}` : ' · Free'}
-              {todayHrs && !isClosed && ` · ${todayHrs}`}
-              {isClosed && (
-                <span style={{ color: 'var(--error)', fontStyle: 'normal' }}> · {getClosureLabel(spot?.openingHours)}</span>
-              )}
-            </span>
-          )}
+          <span className="sc-saved">
+            {price.priceType === 'free'    && ' · Free'}
+            {price.priceType === 'pass'    && ' · Pass'}
+            {price.priceType === 'paid'    && (
+              <>{' · '}{price.label}{' · '}<a
+                href={price.verifyUrl} target="_blank" rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                style={{ fontFamily: 'var(--mono)', color: 'var(--faint)', fontSize: 'inherit', textDecoration: 'none' }}
+              >verify →</a></>
+            )}
+            {price.priceType === 'unknown' && price.verifyUrl && (
+              <>{' · '}<a
+                href={price.verifyUrl} target="_blank" rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                style={{ fontFamily: 'var(--mono)', color: 'var(--faint)', fontSize: 'inherit', textDecoration: 'none' }}
+              >check price →</a></>
+            )}
+            {todayHrs && !isClosed && ` · ${todayHrs}`}
+            {isClosed && (
+              <span style={{ color: 'var(--error)', fontStyle: 'normal' }}> · {getClosureLabel(spot?.openingHours)}</span>
+            )}
+          </span>
         </div>
 
         {/* "Why it's hidden" teaser — single truncated line of editorial text */}

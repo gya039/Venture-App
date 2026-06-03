@@ -9,6 +9,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { INTERESTS } from '@/constants/interests';
 import { useTripModal } from '@/components/TripModalProvider';
+import { formatPrice } from '@/lib/pricing';
 
 const CITY_META = {
   amsterdam:   { country: 'Netherlands',    tagline: 'Canals, culture and the streets tourists miss',      gradient: ['#667eea','#764ba2'], emoji: '🇳🇱' },
@@ -97,13 +98,13 @@ function GemCard({ spot, blurred }) {
             {spot.address}
           </span>
         )}
-        {spot.entryPrice != null ? (
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>
-            €{spot.entryPrice === 0 ? '0 · Free' : spot.entryPrice}
-          </span>
-        ) : (
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#22c55e', flexShrink: 0 }}>Free</span>
-        )}
+        {(() => {
+          const p = formatPrice(spot);
+          if (p.priceType === 'free')    return <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#22c55e', flexShrink: 0 }}>Free</span>;
+          if (p.priceType === 'pass')    return <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--t5, #f59e0b)', flexShrink: 0 }}>Pass</span>;
+          if (p.priceType === 'paid')    return <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>{p.label}</span>;
+          return null; // unknown → omit
+        })()}
         {interestIcons.length > 0 && (
           <div style={{ display: 'flex', gap: 3, marginLeft: 'auto' }}>
             {interestIcons.map(i => (

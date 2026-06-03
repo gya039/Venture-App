@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { getCityPass, getBestTier } from '@/constants/cityPasses';
+import { formatPrice, getNumericPrice } from '@/lib/pricing';
 
 /**
  * DayPassCalculator
@@ -17,8 +18,8 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
   const calc = useMemo(() => {
     // Sum all entry prices across all day plan spots
     const allSpots = days.flatMap((d) => d.spots ?? []);
-    const paidSpots = allSpots.filter((s) => (s.entryPrice ?? 0) > 0);
-    const totalEntries = paidSpots.reduce((sum, s) => sum + (s.entryPrice ?? 0), 0);
+    const paidSpots = allSpots.filter((s) => formatPrice(s).priceType === 'paid');
+    const totalEntries = paidSpots.reduce((sum, s) => sum + getNumericPrice(s), 0);
 
     if (!pass) return { pass: null, totalEntries, paidSpots };
 
@@ -178,7 +179,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
               {spot.name}
             </span>
             <span style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', flexShrink: 0 }}>
-              €{(spot.entryPrice ?? 0).toFixed(0)}
+              €{getNumericPrice(spot).toFixed(0)}
             </span>
           </div>
         ))}

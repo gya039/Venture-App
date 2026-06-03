@@ -30,8 +30,10 @@ import {
   serverTimestamp,
   Timestamp,
   writeBatch,
+  increment,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { normaliseCategory } from './categories';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -281,7 +283,12 @@ export async function getCachedSpots(city) {
   );
   // Bypass the local IndexedDB cache so we always read the current server state.
   const snaps = await getDocsFromServer(q);
-  const firestoreSpots = snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+  // Normalise category on read so existing Firestore data (slash-pairs, legacy
+  // values) comes out canonical without requiring a data migration.
+  const firestoreSpots = snaps.docs.map((d) => {
+    const data = d.data();
+    return { id: d.id, ...data, category: normaliseCategory(data.category) };
+  });
 
   const staticSpots = getStaticSpots(city);
   if (staticSpots.length === 0) return firestoreSpots;
@@ -347,6 +354,7 @@ export async function cacheSpots(city, spots, force = false) {
       category:             spot.category              ?? null,
       interests:            spot.interests             ?? [],
       entryPrice:           spot.entryPrice            ?? spot.entry_price        ?? null,
+      passIncluded:         spot.passIncluded          ?? false,
       currency:             spot.currency              ?? 'EUR',
       closureStatus:        spot.closureStatus         ?? 'open',
       openingHours:         spot.openingHours          ?? null,
@@ -972,4 +980,57 @@ export async function getDayPlanSpotsPublic(dayPlanId) {
   );
   const snaps = await getDocs(q);
   return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+// ---------------------------------------------------------------------------
+// Refresh credits
+// ---------------------------------------------------------------------------
+// Stored at:
+//   users/{uid}/cityPreviews/{slug}   — dateless city preview (limit 1)
+//   users/{uid}/destRefreshes/{destId} — trip destination (free tier limit 3)
+//
+// Only EXPLICIT user-triggered refreshes count; initial auto-research does not.
+
+/** Free-tier refresh caps. Import these alongside the functions. */
+export const PREVIEW_REFRESH_LIMIT = 1;
+export const TRIP_REFRESH_LIMIT    = 3;
+
+/** Slug helper — stable key from a city name ("New York" → "new-york"). */
+function citySlug(city) {
+  return city.trim().toLowerCase().replace(/\s+/g, '-');
+}
+
+/** How many times this user has manually refreshed the dateless preview for a city. */
+export async function getPreviewRefreshCount(userId, city) {
+  const ref  = doc(db, 'users', userId, 'cityPreviews', citySlug(city));
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data().refreshCount ?? 0) : 0;
+}
+
+/** Atomically increment the preview-refresh counter for a city. */
+export async function incrementPreviewRefresh(userId, city) {
+  const ref = doc(db, 'users', userId, 'cityPreviews', citySlug(city));
+  await setDoc(ref, {
+    city,
+    refreshCount:    increment(1),
+    lastRefreshedAt: serverTimestamp(),
+  }, { merge: true });
+}
+
+/** How many times this user has manually refreshed a specific trip destination. */
+export async function getDestRefreshCount(userId, destId) {
+  const ref  = doc(db, 'users', userId, 'destRefreshes', destId);
+  const snap = await getDoc(ref);
+  return snap.exists() ? (snap.data().refreshCount ?? 0) : 0;
+}
+
+/** Atomically increment the destination-refresh counter. */
+export async function incrementDestRefresh(userId, destId, city) {
+  const ref = doc(db, 'users', userId, 'destRefreshes', destId);
+  await setDoc(ref, {
+    destId,
+    city,
+    refreshCount:    increment(1),
+    lastRefreshedAt: serverTimestamp(),
+  }, { merge: true });
 }

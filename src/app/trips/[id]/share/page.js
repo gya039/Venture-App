@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { getTripPublic, getDayPlansPublic, getDayPlanSpotsPublic, getCachedSpots } from '@/lib/db';
+import { formatPrice } from '@/lib/pricing';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import ScoreMedallion from '@/components/ScoreMedallion';
 
@@ -27,8 +28,15 @@ const SLOTS = ['morning', 'afternoon', 'evening'];
 const SLOT_LABELS = { morning: '🌅 Morning', afternoon: '☀️ Afternoon', evening: '🌙 Evening' };
 
 /* ── Spot row in itinerary ───────────────────────────────────── */
+const VERIFY_LINK_STYLE = {
+  color: 'inherit', fontSize: '0.8em',
+  textDecoration: 'underline', textDecorationStyle: 'dotted',
+  textUnderlineOffset: '2px',
+};
+
 function ShareSpot({ spot }) {
   const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+  const price = formatPrice(spot);
   return (
     <div className="share-spot" style={{ '--sc': `var(${level.cssVar ?? '--t3'})` }}>
       <ScoreMedallion score={spot.hiddennessScore ?? 5} size={40} showDen={false} />
@@ -37,7 +45,14 @@ function ShareSpot({ spot }) {
         <div className="ss-mt">
           {spot.category && `${spot.category} · `}
           {level.label}
-          {spot.entryPrice != null ? ` · €${spot.entryPrice}` : ' · Free'}
+          {price.priceType === 'free'    && ' · Free'}
+          {price.priceType === 'pass'    && ' · Included with pass'}
+          {price.priceType === 'paid'    && (
+            <>{' · ≈'}{price.label}{' · '}<a href={price.verifyUrl} target="_blank" rel="noopener noreferrer" style={VERIFY_LINK_STYLE}>verify →</a></>
+          )}
+          {price.priceType === 'unknown' && price.verifyUrl && (
+            <>{' · '}<a href={price.verifyUrl} target="_blank" rel="noopener noreferrer" style={VERIFY_LINK_STYLE}>check price →</a></>
+          )}
         </div>
       </div>
     </div>
@@ -49,7 +64,9 @@ function ShareDay({ day, spotMap }) {
   const grouped = SLOTS.reduce((acc, slot) => {
     acc[slot] = (day.spots ?? [])
       .filter((s) => (s.timeOfDay ?? 'morning') === slot)
-      .map((s) => ({ ...s, ...(spotMap[s.spotCity]?.[s.spotId] ?? {}) }))
+      // spotMap is a flat { spotId → spot } map (same shape as useDayPlanner).
+      // Events have name inline (spotId is null) so their spread is just {}.
+      .map((s) => ({ ...s, ...(s.spotId ? (spotMap[s.spotId] ?? {}) : {}) }))
       .filter((s) => s.name);
     return acc;
   }, {});
@@ -96,23 +113,25 @@ function DestSection({ dest }) {
     if (!dest?.id) { setLoading(false); return; }
     async function load() {
       try {
-        const dayPlans = await getDayPlansPublic(dest.id);
+        // Fetch day plans + their spot stubs in parallel with the city spot cache.
+        // Mirror useDayPlanner exactly: one getCachedSpots(dest.city) call builds
+        // a flat { spotId → spot } map — no dependency on spotCity stored per doc
+        // (that field can be missing or case-mismatched on older data).
+        const [dayPlans, allCitySpots] = await Promise.all([
+          getDayPlansPublic(dest.id),
+          getCachedSpots(dest.city),
+        ]);
+        const flatSpotMap = Object.fromEntries(allCitySpots.map(s => [s.id, s]));
+
         const plansWithSpots = await Promise.all(
           dayPlans.map(async (plan) => {
             const spots = await getDayPlanSpotsPublic(plan.id);
             return { ...plan, spots };
           })
         );
-        const citiesNeeded = new Set();
-        plansWithSpots.forEach((plan) => plan.spots.forEach((s) => { if (s.spotCity) citiesNeeded.add(s.spotCity); }));
-        const citySpotMap = {};
-        await Promise.all([...citiesNeeded].map(async (city) => {
-          const allSpots = await getCachedSpots(city);
-          citySpotMap[city] = {};
-          allSpots.forEach((s) => { citySpotMap[city][s.id] = s; });
-        }));
+
         setDays(plansWithSpots);
-        setSpotMap(citySpotMap);
+        setSpotMap(flatSpotMap);
       } catch (err) {
         console.error('[SharePage] load error:', err);
       } finally {

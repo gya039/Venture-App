@@ -18,6 +18,17 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
+    // ── Refresh credits (subcollections of users) ─────────────────
+    // destRefreshes: how many times the user has force-refreshed a trip destination
+    // cityPreviews:  how many times the user has refreshed a dateless city preview
+    // Both are owner-only — no other user or public can read/write them.
+    match /users/{uid}/destRefreshes/{destId} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    match /users/{uid}/cityPreviews/{slug} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
     // ── Trips ────────────────────────────────────────────────────
     // Owners can read/write; public trips are readable by anyone
     match /trips/{tripId} {

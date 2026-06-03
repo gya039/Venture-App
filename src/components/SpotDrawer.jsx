@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { saveSpotNote, getSpotNote } from '@/lib/db';
 import { getTodayHours, getFullSchedule, getClosureLabel } from '@/utils/spotUtils';
+import { formatPrice } from '@/lib/pricing';
 import ScoreMedallion from '@/components/ScoreMedallion';
 
 const SLOTS      = ['morning', 'afternoon', 'evening'];
@@ -235,12 +236,47 @@ export default function SpotDrawer({ spot, days = [], userId, onClose, onAddToDa
               ) : null}
 
               {/* Entry cost */}
-              <div className="dr-fact">
-                <div className="fl">Entry</div>
-                <div className="fv" style={{ color: spot.entryPrice == null ? 'var(--olive)' : undefined }}>
-                  {spot.entryPrice == null ? 'Free' : `€${spot.entryPrice}/pp`}
-                </div>
-              </div>
+              {(() => {
+                const price = formatPrice(spot);
+                const chipStyle = {
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  fontSize: '0.6rem', fontFamily: 'var(--mono)',
+                  letterSpacing: '0.04em', color: 'var(--faint)',
+                };
+                const linkStyle = {
+                  color: 'var(--faint)', textDecoration: 'none',
+                  fontFamily: 'var(--mono)', fontSize: '0.6rem',
+                };
+                return (
+                  <div className="dr-fact">
+                    <div className="fl">Entry</div>
+                    <div className="fv">
+                      {price.priceType === 'free' && (
+                        <span style={{ color: 'var(--olive)' }}>Free</span>
+                      )}
+                      {price.priceType === 'pass' && (
+                        <span style={{ color: 'var(--t5, #f59e0b)' }}>Included with pass</span>
+                      )}
+                      {price.priceType === 'paid' && (
+                        <span>
+                          {price.label} per person{' '}
+                          <span style={chipStyle}>
+                            approx ·{' '}
+                            <a href={price.verifyUrl} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+                              verify →
+                            </a>
+                          </span>
+                        </span>
+                      )}
+                      {price.priceType === 'unknown' && price.verifyUrl && (
+                        <a href={price.verifyUrl} target="_blank" rel="noopener noreferrer" style={{ ...linkStyle, fontSize: '0.8rem' }}>
+                          check price →
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Visit duration */}
               {spot.visitDurationMinutes && (

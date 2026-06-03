@@ -1,12 +1,13 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import TopNav from '@/components/TopNav';
 import { getCachedSpots } from '@/lib/db';
 import { useAuth } from '@/hooks/useAuth';
+import { useSavedSpots } from '@/hooks/useSavedSpots';
 import { getHiddennessLevel } from '@/constants/hiddenness';
-import { useTripModal } from '@/components/TripModalProvider';
 import { flagEmoji } from '@/utils/flagEmoji';
 import ScoreMedallion from '@/components/ScoreMedallion';
 
@@ -52,7 +53,7 @@ async function fetchCitySuggestions(query) {
 }
 
 /* ── City card — Field Guide edition ────────────────────────────────────── */
-function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActive, onClick }) {
+function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActive, onClick, starCount = 0 }) {
   const [hoverGems,   setHoverGems]   = useState(null);
   const [loadingGems, setLoadingGems] = useState(false);
   const fetchRef = useRef(null);
@@ -109,6 +110,14 @@ function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActiv
         <div className="cc-vibe">{tag}</div>
         <div className="cc-foot">
           <span className="cc-gems"><b>{gems}</b> hidden gems</span>
+          {starCount > 0 && (
+            <span style={{
+              fontFamily: 'var(--mono)', fontSize: '0.65rem', fontWeight: 700,
+              color: 'var(--terracotta)', letterSpacing: '0.04em',
+            }}>
+              ★ {starCount}
+            </span>
+          )}
           <span className="cc-arrow">→</span>
         </div>
       </div>
@@ -218,17 +227,20 @@ function SidebarSpotRow({ spot, blurred, cityPhoto }) {
 }
 
 /* ── City preview panel — Field Guide redesign ────────────────────────────── */
-function CityPanel({ cityData, spots, loading, user, onClose }) {
-  const tripModal = useTripModal();
+function CityPanel({ cityData, spots, loading, user, onClose, starCount = 0 }) {
+  const router = useRouter();
   if (!cityData) return null;
 
   const VISIBLE_FREE = 3;
   const previewSpots = spots.slice(0, 8);
   const blurFrom = user ? previewSpots.length : VISIBLE_FREE;
 
+  const cityPath    = `/city/${encodeURIComponent(cityData.city)}?cc=${cityData.code ?? ''}`;
+  const guestHref   = `/auth?redirect=${encodeURIComponent(cityPath)}`;
+
   function handlePlanTrip() {
     onClose();
-    if (user) tripModal?.openModal(cityData.city);
+    router.push(cityPath);
   }
 
   return (
@@ -329,6 +341,11 @@ function CityPanel({ cityData, spots, loading, user, onClose }) {
                 {loading ? 'Loading gems…' : spots.length > 0
                   ? `${spots.length} hidden gems curated`
                   : 'No gems cached yet — start a trip to research'}
+              {starCount > 0 && (
+                <span style={{ marginLeft: 10, color: 'var(--terracotta)', fontWeight: 700 }}>
+                  · ★ {starCount} starred
+                </span>
+              )}
               </span>
             </div>
           )}
@@ -453,16 +470,16 @@ function CityPanel({ cityData, spots, loading, user, onClose }) {
               onMouseEnter={(e) => e.currentTarget.style.background = 'var(--terracotta-deep)'}
               onMouseLeave={(e) => e.currentTarget.style.background = 'var(--terracotta)'}
             >
-              Plan a trip here →
+              Explore {cityData.city} map →
             </button>
           ) : (
-            <Link href="/auth" style={{
+            <Link href={guestHref} style={{
               display: 'block', padding: '13px', textAlign: 'center',
               background: 'var(--terracotta)', color: 'oklch(0.97 0.008 84)',
               borderRadius: 12, fontWeight: 700, fontSize: 14.5,
               textDecoration: 'none', transition: 'background .15s',
             }}>
-              Plan a trip here →
+              Sign in to explore →
             </Link>
           )}
         </div>
@@ -474,6 +491,17 @@ function CityPanel({ cityData, spots, loading, user, onClose }) {
 /* ── Main explore page ───────────────────────────────────────────────────── */
 export default function ExplorePage() {
   const { user } = useAuth();
+  const { savedSpots } = useSavedSpots(user?.uid);
+
+  // Per-city starred count derived from saved spots (no extra Firestore query)
+  const starCounts = useMemo(
+    () => savedSpots.reduce((acc, s) => {
+      if (s.city) acc[s.city] = (acc[s.city] ?? 0) + 1;
+      return acc;
+    }, {}),
+    [savedSpots],
+  );
+
   const [region,       setRegion]       = useState('All');
   const [query,        setQuery]        = useState('');
   const [suggestions,  setSuggestions]  = useState([]);
@@ -627,6 +655,7 @@ export default function ExplorePage() {
                 {...dest}
                 isActive={panelCity?.city === dest.city}
                 onClick={() => openPanel(dest)}
+                starCount={starCounts[dest.city] ?? 0}
               />
             ))}
           </div>
@@ -640,6 +669,7 @@ export default function ExplorePage() {
         loading={panelLoading}
         user={user}
         onClose={closePanel}
+        starCount={panelCity ? (starCounts[panelCity.city] ?? 0) : 0}
       />
     </div>
   );

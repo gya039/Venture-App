@@ -31,7 +31,9 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files — NEVER commit .env.local (contains API keys)
+# env files — NEVER commit any .env file with real values
+.env
+.env.*
 .env.local
 .env.local.*
 .env.development.local

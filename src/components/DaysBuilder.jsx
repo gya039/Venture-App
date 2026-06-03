@@ -34,6 +34,8 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
+import { categoryLabel } from '@/lib/categories';
+import { formatPrice, getNumericPrice } from '@/lib/pricing';
 import {
   addSpotToDayPlan,
   addEventToDayPlan,
@@ -50,38 +52,8 @@ const SLOTS      = ['morning', 'afternoon', 'evening'];
 const SLOT_LABEL = { morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening' };
 const SLOT_COLOR = { morning: '#f59e0b', afternoon: '#fb923c', evening: '#b45309' };
 
-/* ── Category normalisation — collapses duplicate/mis-cased taxonomy ─────── */
-const CATEGORY_ALIASES = {
-  'museum': 'Museum', 'museums': 'Museum',
-  'art': 'Art', 'art gallery': 'Art', 'gallery': 'Art', 'galleries': 'Art',
-  'park': 'Park', 'park-green-space': 'Park', 'parks': 'Park', 'green space': 'Park',
-  'garden': 'Garden', 'gardens': 'Garden',
-  'restaurant': 'Restaurant', 'restaurants': 'Restaurant',
-  'cafe': 'Café', 'café': 'Café', 'cafes': 'Café', 'cafés': 'Café',
-  'coffee': 'Café', 'coffee shop': 'Café',
-  'bar': 'Bar', 'bars': 'Bar',
-  'street art': 'Street Art',
-  'architecture': 'Architecture',
-  'market': 'Market', 'markets': 'Market',
-  'shop': 'Shop', 'shopping': 'Shop',
-  'viewpoint': 'Viewpoint', 'vista': 'Viewpoint',
-  'neighbourhood': 'Neighbourhood', 'neighborhood': 'Neighbourhood',
-  'beach': 'Beach',
-  'historic site': 'Historic Site', 'historic': 'Historic Site',
-  'landmark': 'Landmark', 'monument': 'Landmark',
-  'street food': 'Street Food',
-  'nature': 'Nature',
-  'temple': 'Temple', 'church': 'Church', 'cathedral': 'Cathedral',
-  'nightlife': 'Nightlife',
-  'cultural': 'Cultural', 'cultural site': 'Cultural',
-  'theatre': 'Theatre', 'theater': 'Theatre',
-};
-function normalizeCategory(raw) {
-  if (!raw) return '';
-  const key = raw.toLowerCase().trim().replace(/_/g, ' ');
-  return CATEGORY_ALIASES[key]
-    ?? key.split(/[\s-]+/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-}
+// Category normalisation is now handled by src/lib/categories.js (categoryLabel).
+// All spot.category values are canonical Title Case — no local alias map needed.
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 function initSlots(days) {
@@ -305,11 +277,13 @@ function PlacedSpotCard({ spot, onRemove }) {
             {spot.visitDurationMinutes ? (
               <span style={{ fontSize: '0.67rem', color: 'var(--muted)' }}>⏱ {fmtDuration(spot.visitDurationMinutes)}</span>
             ) : null}
-            {spot.entryPrice != null ? (
-              <span style={{ fontSize: '0.67rem', color: spot.entryPrice === 0 ? 'var(--teal, #22c55e)' : 'var(--muted)' }}>
-                {spot.entryPrice === 0 ? 'Free' : `€${spot.entryPrice}`}
-              </span>
-            ) : null}
+            {(() => {
+              const p = formatPrice(spot);
+              if (p.priceType === 'free') return <span style={{ fontSize: '0.67rem', color: 'var(--teal, #22c55e)' }}>Free</span>;
+              if (p.priceType === 'pass') return <span style={{ fontSize: '0.67rem', color: 'var(--t5, #f59e0b)' }}>Pass</span>;
+              if (p.priceType === 'paid') return <span style={{ fontSize: '0.67rem', color: 'var(--muted)' }}>{p.label}</span>;
+              return null; // unknown → omit in mini chip to avoid clutter
+            })()}
             {todayHrs ? (
               <span style={{ fontSize: '0.67rem', color: isClosed ? 'var(--error)' : 'var(--muted)' }}>
                 {isClosed ? getClosureLabel(spot.openingHours) : `Today ${todayHrs}`}
@@ -616,7 +590,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
 
   const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
   const totalSpots    = allSpots.length;
-  const totalCost     = allSpots.reduce((s, sp) => s + (sp.entryPrice ?? 0), 0);
+  const totalCost     = allSpots.reduce((s, sp) => s + getNumericPrice(sp), 0);
   const totalDuration = allSpots.reduce((s, sp) => s + (sp.visitDurationMinutes ?? 0), 0);
 
   let totalDistKm = 0;
@@ -1135,13 +1109,13 @@ export default function DaysBuilder({
   );
 
   const availableCategories = useMemo(
-    () => [...new Set(pickerBase.map(s => normalizeCategory(s.category)).filter(Boolean))].sort(),
+    () => [...new Set(pickerBase.map(s => s.category).filter(Boolean))].sort(),
     [pickerBase],
   );
 
   const pickerSpots = useMemo(() => {
     let s = pickerBase;
-    if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(normalizeCategory(sp.category ?? '')));
+    if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(sp.category ?? ''));
     if (pickerMinScore > 0) s = s.filter(sp => (sp.hiddennessScore ?? 1) >= pickerMinScore);
     const q = pickerSearch.toLowerCase().trim();
     if (q) s = s.filter(sp => sp.name?.toLowerCase().includes(q) || sp.category?.toLowerCase().includes(q));
@@ -1154,7 +1128,7 @@ export default function DaysBuilder({
     [allSlots_]
   );
   const totalCost = useMemo(() =>
-    Object.values(allSlots_).reduce((sum, d) => sum + SLOTS.flatMap(sl => d[sl] ?? []).reduce((s, sp) => s + (sp.entryPrice ?? 0), 0), 0),
+    Object.values(allSlots_).reduce((sum, d) => sum + SLOTS.flatMap(sl => d[sl] ?? []).reduce((s, sp) => s + getNumericPrice(sp), 0), 0),
     [allSlots_]
   );
 

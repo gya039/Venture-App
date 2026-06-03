@@ -4,8 +4,10 @@
 //       → merge + deduplicate by name → geocode via Mapbox → SSE each spot.
 
 // Vercel Hobby tier caps at 60s; Pro tier supports up to 300s.
-// Multi-pass research for large cities typically takes 60–180s.
-export const maxDuration = 300;
+// Streaming means spots found before the cutoff are still returned.
+export const maxDuration = 60;
+
+import { normaliseCategory } from '@/lib/categories';
 
 // ---------------------------------------------------------------------------
 // Quality gate — drops spots the model itself rates as low-confidence
@@ -39,9 +41,10 @@ const JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanation, no 
       "hiddennessScore": <integer 1–10>,
       "hiddennessLabel": "Tourist Staple|Worth Knowing|Hidden Gem|Local Secret|Off the Map",
       "editorialConfidence": <float 0.0–1.0>,
-      "category": "food|museum|park|bar|cafe|market|landmark|art|nature|shopping|spa|music|other",
+      "category": "Art|Architecture|Bar|Beach|Café|Food|History|Market|Museum|Music|Nature|Neighbourhood|Nightlife|Offbeat|Park|Shopping|Spa|Spiritual|Other",
       "interests": ["hiking","food","museums","art","nightlife","beaches","markets","monuments","photography","relaxation","music","streets","offbeat","outdoor"],
-      "entryPrice": <number in EUR, 0 if free, null if unknown>,
+      "entryPrice": <number in EUR; the ACTUAL standalone admission price even if the spot is included in a city pass; 0 if genuinely free to everyone; null if unknown>,
+      "passIncluded": <boolean: true ONLY if this spot is free solely because it is bundled in a city tourist pass and has no independently-free entry — false for all genuinely free spots and all spots with real entry prices>,
       "currency": "EUR",
       "closureStatus": "<research actual status: open | temporarily_closed | permanently_closed | seasonal>",
       "openingHours": {"mon":"09:00-18:00","tue":"09:00-18:00","wed":"09:00-18:00","thu":"09:00-18:00","fri":"09:00-20:00","sat":"10:00-18:00","sun":"closed"},
@@ -374,6 +377,174 @@ async function callOpenAI(prompt) {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming OpenAI — parse spot objects incrementally as tokens arrive
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the character index just after the opening `[` of the "spots" array
+ * in the accumulated JSON text. Returns -1 if not yet present.
+ */
+function findSpotsArrayStart(text) {
+  const keyIdx = text.indexOf('"spots"');
+  if (keyIdx === -1) return -1;
+  const bracketIdx = text.indexOf('[', keyIdx);
+  return bracketIdx === -1 ? -1 : bracketIdx + 1;
+}
+
+/**
+ * Extract all complete top-level `{…}` objects from `text`.
+ * Returns the parsed objects and the unconsumed tail (an incomplete object
+ * or whitespace between objects).
+ */
+function extractCompleteObjects(text) {
+  const objects = [];
+  let depth        = 0;
+  let objStart     = -1;
+  let lastEnd      = 0;
+  let parseFailures = 0;
+  let i            = 0;
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    // Skip over quoted strings so braces inside values don't count
+    if (ch === '"') {
+      i++;
+      while (i < text.length) {
+        if (text[i] === '\\') { i += 2; continue; }
+        if (text[i] === '"')  { i++; break; }
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === '{') {
+      if (depth === 0) objStart = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && objStart !== -1) {
+        try { objects.push(JSON.parse(text.slice(objStart, i + 1))); }
+        catch { parseFailures++; } // silently consumed — now counted
+        lastEnd  = i + 1;
+        objStart = -1;
+      }
+    }
+    i++;
+  }
+
+  return { objects, remaining: text.slice(lastEnd), parseFailures };
+}
+
+/**
+ * Async generator that streams a single OpenAI completion and yields each
+ * spot object as soon as its closing `}` token arrives in the stream.
+ * This lets callers start geocoding + forwarding spots to the client
+ * immediately rather than waiting for the full JSON response.
+ */
+async function* streamOpenAISpots(prompt, stats = {}) {
+  stats.parseFailures = 0;
+  stats.finishReason  = null;
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY not set in .env.local');
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method:  'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      model:           'gpt-4o-mini',
+      messages:        [{ role: 'user', content: prompt }],
+      temperature:     0.4,
+      response_format: { type: 'json_object' },
+      stream:          true,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`OpenAI error ${res.status}: ${err?.error?.message ?? res.statusText}`);
+  }
+
+  const reader  = res.body.getReader();
+  const decoder = new TextDecoder();
+  let sseBuf   = '';   // incomplete SSE line buffer
+  let jsonAccum = '';  // accumulated JSON content text
+  let inArray   = false; // true once we've found the opening '[' of the spots array
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      sseBuf += decoder.decode(value, { stream: true });
+      const lines = sseBuf.split('\n');
+      sseBuf = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') return;
+
+        let chunk;
+        try { chunk = JSON.parse(payload); } catch { continue; }
+
+        // Capture finish_reason whenever OpenAI sets it (arrives on the last content chunk)
+        const fr = chunk.choices?.[0]?.finish_reason;
+        if (fr) stats.finishReason = fr;
+
+        const token = chunk.choices?.[0]?.delta?.content;
+        if (!token) continue;
+
+        jsonAccum += token;
+
+        // Wait until we've buffered past the opening of the spots array
+        if (!inArray) {
+          const arrayStart = findSpotsArrayStart(jsonAccum);
+          if (arrayStart === -1) continue;
+          jsonAccum = jsonAccum.slice(arrayStart);
+          inArray   = true;
+        }
+
+        // Pull out every complete spot object that's now available
+        const { objects, remaining, parseFailures } = extractCompleteObjects(jsonAccum);
+        stats.parseFailures += parseFailures;
+        jsonAccum = remaining;
+
+        for (const obj of objects) yield obj;
+      }
+    }
+  } finally {
+    reader.cancel().catch(() => {});
+  }
+}
+
+/**
+ * Concurrency-bounded work queue.
+ * Limits how many async jobs run simultaneously; extras queue and auto-drain.
+ */
+class BoundedQueue {
+  constructor(concurrency) {
+    this._limit   = concurrency;
+    this._active  = 0;
+    this._pending = [];
+  }
+  add(fn) {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        this._active++;
+        Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+          this._active--;
+          if (this._pending.length > 0) this._pending.shift()();
+        });
+      };
+      if (this._active < this._limit) run();
+      else this._pending.push(run);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Deduplication helpers
 // ---------------------------------------------------------------------------
 
@@ -617,8 +788,12 @@ export async function POST(request) {
           const deepRaw   = await callOpenAI(buildDeepPrompt(city, category));
           console.log(`[research/deep] ${city}/${category}: AI returned ${deepRaw.length} spots`);
 
-          // No quality gate in deep mode — everything is labelled, nothing hidden
-          const cleanSpots = deepRaw.map(({ lat, lng, latitude, longitude, ...rest }) => rest);
+          // No quality gate in deep mode — everything is labelled, nothing hidden.
+          // Normalise category to the canonical set.
+          const cleanSpots = deepRaw.map(({ lat, lng, latitude, longitude, ...rest }) => ({
+            ...rest,
+            category: normaliseCategory(rest.category),
+          }));
           if (!cleanSpots.length) throw new Error('AI returned no spots for this category.');
 
           send('status', { message: `${cleanSpots.length} ${category} spots found — geocoding…` });
@@ -702,117 +877,131 @@ export async function POST(request) {
           return;
         }
 
-        // ══ Curated mode: 6-pass research ════════════════════════════════════
-        // ── Pass 1: History, architecture, neighbourhood character ────────────
-        send('status', { message: 'Pass 1 of 6 — researching history, architecture and neighbourhood character…' });
-        const pass1 = await callOpenAI(buildPromptPass1(city, interests));
-        console.log(`[research] Pass 1: received ${pass1.length} spots`);
-        send('status', { message: `Pass 1 complete (${pass1.length} spots) — researching food, markets and nightlife…` });
+        // ══ Curated mode: 6-pass streaming research ══════════════════════════
+        // All 6 passes stream concurrently via OpenAI's streaming API.
+        // Each spot is quality-gated + deduped + geocoded as soon as its closing
+        // `}` arrives — pins appear on the client map within ~10–15 s of starting.
+        send('status', { message: 'Starting AI research across 6 specialist categories…' });
 
-        // ── Pass 2: Food, markets, nightlife, subculture ──────────────────────
-        const pass2 = await callOpenAI(buildPromptPass2(city, interests));
-        console.log(`[research] Pass 2: received ${pass2.length} spots`);
-        send('status', { message: `Pass 2 complete (${pass2.length} spots) — researching parks, nature and local secrets…` });
-
-        // ── Pass 3: Parks, nature, spiritual, viewpoints ──────────────────────
-        const pass3 = await callOpenAI(buildPromptPass3(city, interests));
-        console.log(`[research] Pass 3: received ${pass3.length} spots`);
-        send('status', { message: `Pass 3 complete (${pass3.length} spots) — researching neighbourhoods and local streets…` });
-
-        // ── Pass 4: Neighbourhoods, districts, local streets ──────────────────
-        const pass4 = await callOpenAI(buildPromptPass4(city, interests));
-        console.log(`[research] Pass 4: received ${pass4.length} spots`);
-        send('status', { message: `Pass 4 complete (${pass4.length} spots) — researching underground culture and subculture…` });
-
-        // ── Pass 5: Underground culture, music, art, subculture ───────────────
-        const pass5 = await callOpenAI(buildPromptPass5(city, interests));
-        console.log(`[research] Pass 5: received ${pass5.length} spots`);
-        send('status', { message: `Pass 5 complete (${pass5.length} spots) — researching city edges and hidden outskirts…` });
-
-        // ── Pass 6: City edges, outskirts, hidden waterways, rooftops ─────────
-        const pass6 = await callOpenAI(buildPromptPass6(city, interests));
-        console.log(`[research] Pass 6: received ${pass6.length} spots`);
-        send('status', { message: `Pass 6 complete (${pass6.length} spots) — merging and deduplicating…` });
-
-        // ── Merge + deduplicate ───────────────────────────────────────────────
-        const totalGenerated    = pass1.length + pass2.length + pass3.length + pass4.length + pass5.length + pass6.length;
-        const rawMerged         = mergeAndDeduplicate([pass1, pass2, pass3, pass4, pass5, pass6]);
-        const duplicatesRemoved = totalGenerated - rawMerged.length;
-
-        // ── Quality gate ─────────────────────────────────────────────────────
-        // Drop spots the model itself rated below the confidence threshold.
-        // Spots missing the field (e.g. from old cached data) pass through at 0.5.
-        const afterQuality      = rawMerged.filter(s => (s.editorialConfidence ?? 0.5) >= CONFIDENCE_THRESHOLD);
-        const droppedByQuality  = rawMerged.length - afterQuality.length;
-        if (droppedByQuality > 0) {
-          console.log(
-            `[research] Quality gate: dropped ${droppedByQuality}/${rawMerged.length} spots ` +
-            `(editorialConfidence < ${CONFIDENCE_THRESHOLD}) for ${city}`
-          );
-        } else {
-          console.log(`[research] Quality gate: all ${rawMerged.length} spots passed (threshold ${CONFIDENCE_THRESHOLD})`);
-        }
-
-        // Strip any lat/lng the AI may have returned — coordinates come from Mapbox only
-        const spots             = afterQuality.map(({ lat, lng, latitude, longitude, ...rest }) => rest);
-
-        if (!spots.length) throw new Error('AI returned no spots. Please try again.');
-
-        send('status', { message: `${spots.length} spots after quality filter (${duplicatesRemoved} dupes + ${droppedByQuality} quality drops) — geocoding locations…` });
-        send('total',  { count: spots.length });
-
-        // ── Geocode ───────────────────────────────────────────────────────────
-        // Prefer a server-only token to avoid unnecessarily using the public-bundle token.
+        // Geocode city centre first so workers can start immediately
         const token      = process.env.MAPBOX_SERVER_TOKEN ?? process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
         const cityCenter = token ? await getCityCenter(city, token) : null;
-
         if (!cityCenter) {
-          console.warn(`[/api/research] getCityCenter failed for "${city}" — geocoding unavailable`);
+          console.warn(`[/api/research] getCityCenter failed for "${city}"`);
         }
 
-        let sent    = 0;
-        let skipped = 0;
+        // ── Shared cross-pass state ───────────────────────────────────────────
+        const seenNames       = [];   // accumulated names for live dedup; first-version wins
+        const geocodePromises = [];   // collected so we can await all at the end
+        let sent             = 0;
+        let skipped          = 0;
+        let totalGenerated   = 0;
+        let qualityDropped   = 0;
+        let dedupDropped     = 0;
+        let completedPasses  = 0;
 
-        // Geocode with up to 5 concurrent workers — reduces research time ~4×
-        // compared to sequential processing.
-        const CONCURRENCY = 5;
-        const queue = spots.slice();
+        // Bounded geocoding pool (max 5 concurrent Mapbox requests)
+        const geoPool = new BoundedQueue(5);
 
-        const processSpot = async (spot) => {
-          const geocoded = (token && cityCenter)
-            ? await geocodeSpot(spot, city, cityCenter, token)
-            : { ...spot, coordsMissing: true };
-
-          if (geocoded.coordsMissing) {
-            skipped++;
-          } else {
-            send('spot', geocoded);
-            sent++;
+        /**
+         * Called for every spot that arrives from any streaming pass.
+         * Applies quality gate + cross-pass dedup synchronously (JS single-thread
+         * guarantees no interleaving between processSpot calls at await points),
+         * then submits geocoding to the bounded pool without blocking the caller.
+         * passStats receives per-pass quality/dedup breakdowns for the funnel log.
+         */
+        const processIncomingSpot = (spot, passStats) => {
+          totalGenerated++;
+          // Quality gate
+          if ((spot.editorialConfidence ?? 0.5) < CONFIDENCE_THRESHOLD) {
+            qualityDropped++;
+            passStats.qualityDropped = (passStats.qualityDropped ?? 0) + 1;
+            return;
           }
+          // Cross-pass dedup — first version wins (avoids downstream rewrite complexity)
+          if (seenNames.some(n => isDuplicate(n, spot.name))) {
+            dedupDropped++;
+            passStats.dedupDropped = (passStats.dedupDropped ?? 0) + 1;
+            return;
+          }
+          seenNames.push(spot.name);
+          passStats.queuedForGeocode = (passStats.queuedForGeocode ?? 0) + 1;
+          // Strip any AI-provided coordinates; Mapbox is the authoritative geocoder.
+          // Normalise category to the canonical set at point of generation.
+          const { lat, lng, latitude, longitude, ...rest } = spot;
+          const clean = { ...rest, category: normaliseCategory(rest.category) };
+          // Queue the geocoding work and collect the promise so we can await at the end
+          geocodePromises.push(
+            geoPool.add(async () => {
+              const geocoded = (token && cityCenter)
+                ? await geocodeSpot(clean, city, cityCenter, token)
+                : { ...clean, coordsMissing: true };
+              if (!geocoded.coordsMissing) { send('spot', geocoded); sent++; }
+              else skipped++;
+            })
+          );
         };
 
-        const workers = Array.from(
-          { length: Math.min(CONCURRENCY, spots.length) },
-          async () => {
-            while (queue.length > 0) {
-              const spot = queue.shift();
-              if (spot) await processSpot(spot);
+        // ── Run all 6 passes in parallel, streaming spots as they arrive ──────
+        const PASS_CONFIGS = [
+          { label: 'History & Architecture', prompt: buildPromptPass1(city, interests) },
+          { label: 'Food & Nightlife',       prompt: buildPromptPass2(city, interests) },
+          { label: 'Parks & Nature',         prompt: buildPromptPass3(city, interests) },
+          { label: 'Neighbourhoods',         prompt: buildPromptPass4(city, interests) },
+          { label: 'Subculture & Arts',      prompt: buildPromptPass5(city, interests) },
+          { label: 'City Edges & Hidden',    prompt: buildPromptPass6(city, interests) },
+        ];
+
+        await Promise.all(
+          PASS_CONFIGS.map(async ({ label, prompt }) => {
+            let passCount = 0;
+            const passStats = { parseFailures: 0, finishReason: null, qualityDropped: 0, dedupDropped: 0, queuedForGeocode: 0 };
+            try {
+              for await (const spot of streamOpenAISpots(prompt, passStats)) {
+                processIncomingSpot(spot, passStats);
+                passCount++;
+              }
+            } catch (err) {
+              // A single failing pass doesn't abort the whole run
+              console.error(`[research] ${label} pass error:`, err.message);
             }
-          },
+            completedPasses++;
+            console.log(
+              `[research/funnel] ${label} (${completedPasses}/6): ` +
+              `yielded=${passCount} | parseErr=${passStats.parseFailures} | ` +
+              `qualityDrop=${passStats.qualityDropped} | dedupDrop=${passStats.dedupDropped} | ` +
+              `geocodeQueued=${passStats.queuedForGeocode} | finishReason=${passStats.finishReason ?? 'unknown'}`
+            );
+            send('status', {
+              message: `${completedPasses}/6 passes complete — ${seenNames.length} unique gems found, geocoding in progress…`,
+            });
+          })
         );
-        await Promise.all(workers);
+
+        // ── All streaming done; wait for any in-flight geocoding to finish ────
+        await Promise.all(geocodePromises);
 
         if (sent === 0) {
           const reason = !cityCenter
             ? `Mapbox could not locate "${city}" — check your Mapbox token or try a different city name.`
-            : `Mapbox geocoding failed for all ${skipped} spot${skipped !== 1 ? 's' : ''} in ${city}. The city may be outside the supported region or the token may be rate-limited.`;
+            : `Mapbox geocoding failed for all ${skipped} spot${skipped !== 1 ? 's' : ''} in ${city}.`;
           send('error', { message: reason });
         } else {
-          if (skipped > 0) {
-            console.log(`[/api/research] ${city}: sent=${sent} skipped=${skipped} (geocoding failed)`);
-          }
-          send('summary', { generated: totalGenerated, unique: spots.length, geocoded: sent, dropped: skipped, qualityDropped: droppedByQuality, city });
-          send('done',    { total: sent });
+          console.log(
+            `[research/funnel] ${city} TOTALS: ` +
+            `generated=${totalGenerated} | qualityDropped=${qualityDropped} | dedupDropped=${dedupDropped} | ` +
+            `geocodeQueued=${seenNames.length} | geocodeOK=${sent} | geocodeFail=${skipped}`
+          );
+          send('summary', {
+            generated:      totalGenerated,
+            unique:         seenNames.length,
+            geocoded:       sent,
+            dropped:        skipped,
+            qualityDropped,
+            dedupDropped,
+            city,
+          });
+          send('done', { total: sent });
         }
       } catch (err) {
         console.error('[/api/research] error:', err);

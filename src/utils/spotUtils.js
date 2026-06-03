@@ -98,20 +98,38 @@ export function getClosureLabel(openingHours) {
 
 /* ── Category icon helpers ─────────────────────────────────────────────── */
 export const CATEGORY_ICON_MAP = [
-  ['restaurant', '🍽️'], ['cafe',     '☕'], ['bar',     '🍸'],
-  ['bakery',     '🥐'], ['food',     '🍜'], ['drink',   '🥂'],
-  ['museum',     '🏛️'], ['gallery',  '🎨'], ['theater', '🎭'],
-  ['cinema',     '🎬'], ['library',  '📚'],
-  ['park',       '🌿'], ['garden',   '🌸'], ['nature',  '🌲'],
-  ['beach',      '🏖️'], ['lake',     '🏞️'], ['river',   '🌊'],
-  ['market',     '🛍️'], ['shop',     '🛒'], ['shopping','🛍️'],
+  // ── Canonical category values (all 19) — checked first, exact substring match ─
+  ['café',          '☕'], // must precede 'cafe' to handle the accent form
+  ['cafe',          '☕'],
+  ['art',           '🎨'],
+  ['architecture',  '🏛️'],
+  ['bar',           '🍸'],
+  ['beach',         '🏖️'],
+  ['food',          '🍜'],
+  ['history',       '🏰'],
+  ['market',        '🛍️'],
+  ['museum',        '🏛️'],
+  ['music',         '🎵'],
+  ['nature',        '🌿'],
+  ['neighbourhood', '🏘️'],
+  ['nightlife',     '🌙'],
+  ['offbeat',       '🔍'],
+  ['park',          '🌿'],
+  ['shopping',      '🛍️'],
+  ['spa',           '💆'],
+  ['spiritual',     '⛩️'],
+  // ── Substring fallbacks for legacy / AI values not yet normalised ───────────
+  ['restaurant', '🍽️'], ['bakery',   '🥐'], ['drink',   '🥂'],
+  ['gallery',    '🎨'], ['theater',  '🎭'], ['cinema',  '🎬'], ['library', '📚'],
+  ['garden',     '🌸'], ['lake',     '🏞️'], ['river',   '🌊'],
+  ['shop',       '🛒'],
   ['temple',     '⛩️'], ['church',   '⛪'], ['mosque',  '🕌'],
   ['monument',   '🏰'], ['castle',   '🏯'], ['ruin',    '🏚️'],
   ['viewpoint',  '👁️'], ['lookout',  '🔭'], ['tower',   '🗼'],
-  ['spa',        '💆'], ['bath',     '🛁'], ['wellness','🧘'],
-  ['nightlife',  '🌙'], ['club',     '🎵'], ['concert', '🎶'],
+  ['bath',       '🛁'], ['wellness', '🧘'],
+  ['club',       '🎵'], ['concert',  '🎶'],
   ['sport',      '⚽'], ['gym',      '🏋️'],
-  ['street',     '🛤️'], ['square',   '🏙️'], ['neighbourhood','🏘️'],
+  ['street',     '🛤️'], ['square',   '🏙️'],
 ];
 
 export function getCategoryIcon(spot) {

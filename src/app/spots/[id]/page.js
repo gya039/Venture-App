@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
@@ -21,6 +21,10 @@ const TIME_OPTIONS = ['morning', 'afternoon', 'evening'];
 
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 export default function SpotDetailPage() {
+  return <Suspense fallback={null}><SpotDetailContent /></Suspense>;
+}
+
+function SpotDetailContent() {
   const { id: spotId } = useParams();
   const searchParams   = useSearchParams();
   const { user }       = useAuth();

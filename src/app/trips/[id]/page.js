@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
-import { getTrip, addSpotToDayPlan, getCityPass, getSpotNotes, setTripPublic, getSpotSaveCounts, saveSpotReview, getSpotReviewAggregates, saveTripAsTemplate } from '@/lib/db';
+import { getTrip, addSpotToDayPlan, getCityPass, getSpotNotes, setTripPublic, getSpotSaveCounts, saveSpotReview, getSpotReviewAggregates, saveTripAsTemplate, getDestRefreshCount, incrementDestRefresh, TRIP_REFRESH_LIMIT } from '@/lib/db';
 import { track } from '@/lib/analytics';
 import { useDestination } from '@/hooks/useDestination';
 import { useDayPlanner } from '@/hooks/useDayPlanner';
@@ -24,6 +24,7 @@ import { useToast } from '@/components/ToastProvider';
 import { INTERESTS } from '@/constants/interests';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { flagEmoji } from '@/utils/flagEmoji';
+import { formatPrice, getNumericPrice } from '@/lib/pricing';
 
 /* ── Score options (shared between filter bar and filteredSpots) ─────────── */
 const SCORE_OPTS = [
@@ -31,6 +32,15 @@ const SCORE_OPTS = [
   { label: '5+ Local Secret',  min: 5 },
   { label: '7+ Off the Radar', min: 7 },
   { label: '9+ Ultra Hidden',  min: 9 },
+];
+
+/* ── Cost filter options ─────────────────────────────────────────────────── */
+// 'free' = genuinely free (priceType 'free') + pass-included (priceType 'pass')
+// 'paid' = confirmed paid entry only; unknown-price spots appear in 'all' only
+const COST_OPTS = [
+  { key: 'all',  label: 'All cost'  },
+  { key: 'free', label: 'Free only' },
+  { key: 'paid', label: 'Paid only' },
 ];
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
@@ -45,11 +55,11 @@ function fmtDate(iso) {
 /* ── Step progress bar ────────────────────────────────────────────────────── */
 const STEPS = ['Research', 'Days', 'Pass'];
 
-function StepProgress({ activeTab, setActiveTab }) {
-  const activeIdx = STEPS.indexOf(activeTab);
+function StepProgress({ activeTab, setActiveTab, steps = STEPS }) {
+  const activeIdx = steps.indexOf(activeTab);
   return (
     <div className="step-progress">
-      {STEPS.map((step, i) => {
+      {steps.map((step, i) => {
         const isDone   = i < activeIdx;
         const isActive = step === activeTab;
         return (
@@ -160,8 +170,11 @@ export default function TripDetailPage() {
   const [sidebarAdding, setSidebarAdding] = useState(null);  // spotId being added
   const [sidebarAdded,  setSidebarAdded]  = useState(new Set()); // spotIds added
 
-  // Pass tab city pass data
-  const [cityPass, setCityPass] = useState(null);
+  // Pass tab city pass data.
+  // cityPassChecked = true once we've resolved for the current city; until then
+  // we optimistically show all 3 tabs to avoid a flash of missing tab.
+  const [cityPass,        setCityPass]        = useState(null);
+  const [cityPassChecked, setCityPassChecked] = useState(false);
 
   // Spot drawer
   const [drawerSpot, setDrawerSpot] = useState(null);
@@ -198,10 +211,14 @@ export default function TripDetailPage() {
   const [saveCountsLoading, setSaveCountsLoading] = useState(false);
   // Confirm dialog before force-refresh
   const [refreshConfirmVisible, setRefreshConfirmVisible] = useState(false);
+  // How many manual refreshes this user has used for the current destination
+  const [destRefreshCount, setDestRefreshCount] = useState(0);
 
   // Filter bar dropdown + starred state
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
   const [scoreDropdownOpen,    setScoreDropdownOpen]    = useState(false);
+  const [costFilter,           setCostFilter]           = useState('all'); // 'all' | 'free' | 'paid'
+  const [costDropdownOpen,     setCostDropdownOpen]     = useState(false);
   const [starredOnly,          setStarredOnly]          = useState(false);
 
   // Recurring events (Phase 3 — Glasgow only)
@@ -243,11 +260,25 @@ export default function TripDetailPage() {
   }, [mobileView]);
   useEffect(() => { if (spots.length >= 5) setMapMounted(true); }, [spots.length]); // eslint-disable-line
 
-  /* ── Load city pass data when Pass tab selected ─────────────────────────── */
+  /* ── Load city pass data eagerly on destination change ──────────────────── */
+  // Loaded upfront (not gated on tab) so visibleSteps can exclude 'Pass' before
+  // the user ever sees the tab, preventing the "check manually" dead-end.
+  // getCityPass resolves synchronously via a local constant lookup, so this
+  // completes in the same microtask — no visible flash.
   useEffect(() => {
-    if (activeTab !== 'Pass' || !selectedDest?.city) return;
-    getCityPass(selectedDest.city).then(setCityPass).catch(() => setCityPass(null));
-  }, [activeTab, selectedDest?.city]);
+    if (!selectedDest?.city) { setCityPass(null); setCityPassChecked(false); return; }
+    setCityPassChecked(false);
+    getCityPass(selectedDest.city)
+      .then((p) => { setCityPass(p ?? null); setCityPassChecked(true); })
+      .catch(() => { setCityPass(null); setCityPassChecked(true); });
+  }, [selectedDest?.city]); // eslint-disable-line
+
+  /* ── Auto-redirect away from Pass tab if this city has no pass data ─────── */
+  useEffect(() => {
+    if (cityPassChecked && !cityPass && activeTab === 'Pass') {
+      setActiveTab('Days');
+    }
+  }, [cityPassChecked, cityPass, activeTab]); // eslint-disable-line
 
   /* ── Load recurring events when Days tab opens (Glasgow only) ───────────── */
   useEffect(() => {
@@ -272,6 +303,14 @@ export default function TripDetailPage() {
       .then(setReviewAggregates)
       .catch(() => {});
   }, [isPastTrip, spots.length]); // eslint-disable-line
+
+  /* ── Load refresh credit for this destination ───────────────────────────── */
+  useEffect(() => {
+    if (!user?.uid || !selectedDest?.id) return;
+    getDestRefreshCount(user.uid, selectedDest.id)
+      .then(setDestRefreshCount)
+      .catch(() => setDestRefreshCount(0));
+  }, [user?.uid, selectedDest?.id]);
 
   /* ── Auto-clear justFoundId after badge animation ───────────────────────── */
   useEffect(() => {
@@ -312,12 +351,17 @@ export default function TripDetailPage() {
         sp.category?.toLowerCase().includes(q)
       );
     }
+    if (costFilter === 'free') {
+      s = s.filter((sp) => { const t = formatPrice(sp).priceType; return t === 'free' || t === 'pass'; });
+    } else if (costFilter === 'paid') {
+      s = s.filter((sp) => formatPrice(sp).priceType === 'paid');
+    }
     if (starredOnly) {
       s = s.filter((sp) => savedIds.has(sp.id));
     }
     // Default: highest score first
     return [...s].sort((a, b) => (b.hiddennessScore ?? 1) - (a.hiddennessScore ?? 1));
-  }, [spots, filterInterests, minScoreFilter, searchQuery, starredOnly, savedIds]);
+  }, [spots, filterInterests, minScoreFilter, costFilter, searchQuery, starredOnly, savedIds]);
 
   /* ── Keyboard navigation ────────────────────────────────────────────────── */
   useEffect(() => {
@@ -389,6 +433,11 @@ export default function TripDetailPage() {
       await refetch();
       setMapFitRevision((v) => v + 1); // force map to re-fit to the full geocoded set
       track('research_completed', { city: selectedDest?.city, spotCount });
+      // Only count explicit user-triggered refreshes (force=true), not the initial auto-run
+      if (force && user?.uid && selectedDest?.id) {
+        incrementDestRefresh(user.uid, selectedDest.id, selectedDest.city).catch(() => {});
+        setDestRefreshCount(c => c + 1);
+      }
     } catch (err) {
       console.error('Research error:', err);
       const msg = err.message ?? 'Research failed. Please try again.';
@@ -456,8 +505,10 @@ export default function TripDetailPage() {
     setResearchSubTab('spots');
     setSaveCounts({});
     setStarredOnly(false);
+    setCostFilter('all');
     setCategoryDropdownOpen(false);
     setScoreDropdownOpen(false);
+    setCostDropdownOpen(false);
     setDeepInterestId(null);
     setDeepSpots([]);
     setDeepStreaming([]);
@@ -467,6 +518,12 @@ export default function TripDetailPage() {
 
   /* ── Derived ────────────────────────────────────────────────────────────── */
   // filteredSpots is declared earlier (before the keyboard useEffect) to avoid TDZ crash
+
+  // Hide the Pass tab entirely for cities with no pass data.
+  // Until cityPassChecked is true we keep all 3 steps (avoids a flash of disappearing tab).
+  const visibleSteps = (cityPassChecked && !cityPass)
+    ? STEPS.filter((s) => s !== 'Pass')
+    : STEPS;
 
   const presentInterests = useMemo(
     () => INTERESTS.filter((i) => spots.some((s) => (s.interests ?? []).includes(i.id))),
@@ -608,9 +665,9 @@ export default function TripDetailPage() {
             <span className="dates trip-cmd-dates">{dateRange}</span>
           </div>
 
-          {/* Segmented tab switcher */}
+          {/* Segmented tab switcher — Pass hidden when city has no pass data */}
           <nav className="trip-cmd-seg">
-            {STEPS.map((step) => (
+            {visibleSteps.map((step) => (
               <button
                 key={step}
                 type="button"
@@ -624,24 +681,32 @@ export default function TripDetailPage() {
           </nav>
 
           {/* Refresh — only in Research tab when spots exist */}
-          {activeTab === 'Research' && spots.length > 0 && !isResearching && (
-            <button
-              type="button"
-              onClick={() => setRefreshConfirmVisible(true)}
-              style={{
-                flexShrink: 0, padding: '5px 12px', borderRadius: 7,
-                background: 'transparent', border: '1px solid var(--line-strong)',
-                color: 'var(--muted)', fontSize: '0.75rem', fontWeight: 600,
-                cursor: 'pointer', transition: 'all 0.15s',
-                display: 'flex', alignItems: 'center', gap: 4,
-              }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--terracotta)'; e.currentTarget.style.color = 'var(--terracotta)'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line-strong)'; e.currentTarget.style.color = 'var(--muted)'; }}
-              title="Re-run research for this city"
-            >
-              ↻ Refresh
-            </button>
-          )}
+          {activeTab === 'Research' && spots.length > 0 && !isResearching && (() => {
+            const remaining = TRIP_REFRESH_LIMIT - destRefreshCount;
+            const atLimit   = remaining <= 0;
+            return (
+              <button
+                type="button"
+                onClick={() => !atLimit && setRefreshConfirmVisible(true)}
+                disabled={atLimit}
+                style={{
+                  flexShrink: 0, padding: '5px 12px', borderRadius: 7,
+                  background: 'transparent', border: '1px solid var(--line-strong)',
+                  color: atLimit ? 'var(--faint)' : 'var(--muted)',
+                  fontSize: '0.75rem', fontWeight: 600,
+                  cursor: atLimit ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s',
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  opacity: atLimit ? 0.5 : 1,
+                }}
+                onMouseEnter={e => { if (!atLimit) { e.currentTarget.style.borderColor = 'var(--terracotta)'; e.currentTarget.style.color = 'var(--terracotta)'; }}}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--line-strong)'; e.currentTarget.style.color = atLimit ? 'var(--faint)' : 'var(--muted)'; }}
+                title={atLimit ? 'Refresh limit reached (free tier: 3)' : `Refresh research · ${remaining} left`}
+              >
+                ↻ {atLimit ? 'Limit reached' : `Refresh${destRefreshCount > 0 ? ` (${remaining} left)` : ''}`}
+              </button>
+            );
+          })()}
 
           {/* Countdown + share */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
@@ -799,10 +864,10 @@ export default function TripDetailPage() {
               {researchSubTab === 'spots' && (
                 <>
                   {/* Transparent backdrop — closes open dropdowns */}
-                  {(categoryDropdownOpen || scoreDropdownOpen) && (
+                  {(categoryDropdownOpen || scoreDropdownOpen || costDropdownOpen) && (
                     <div
                       style={{ position: 'fixed', inset: 0, zIndex: 40 }}
-                      onClick={() => { setCategoryDropdownOpen(false); setScoreDropdownOpen(false); }}
+                      onClick={() => { setCategoryDropdownOpen(false); setScoreDropdownOpen(false); setCostDropdownOpen(false); }}
                     />
                   )}
                   <div className="filter-bar">
@@ -861,6 +926,28 @@ export default function TripDetailPage() {
                             <button key={min} type="button"
                               className={'fb-score-opt' + (minScoreFilter === min ? ' active' : '')}
                               onClick={() => { setMinScoreFilter(min); setScoreDropdownOpen(false); }}
+                            >{label}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Cost filter dropdown */}
+                    <div className="fb-dropdown">
+                      <button
+                        type="button"
+                        className={`fb-btn${costFilter !== 'all' ? ' active' : ''}`}
+                        onClick={() => { setCostDropdownOpen(v => !v); setCategoryDropdownOpen(false); setScoreDropdownOpen(false); }}
+                      >
+                        {COST_OPTS.find(o => o.key === costFilter)?.label ?? 'All cost'}
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M6 9l6 6 6-6"/></svg>
+                      </button>
+                      {costDropdownOpen && (
+                        <div className="fb-score-panel">
+                          {COST_OPTS.map(({ key, label }) => (
+                            <button key={key} type="button"
+                              className={'fb-score-opt' + (costFilter === key ? ' active' : '')}
+                              onClick={() => { setCostFilter(key); setCostDropdownOpen(false); }}
                             >{label}</button>
                           ))}
                         </div>
@@ -1243,29 +1330,12 @@ export default function TripDetailPage() {
                 ) : (() => {
                   // Inline pass calculation (mirrors DayPassCalculator logic)
                   const allSpots  = days.flatMap((d) => d.spots ?? []);
-                  const paidSpots = allSpots.filter((s) => (s.entryPrice ?? 0) > 0);
-                  const freeSpots = allSpots.filter((s) => !(s.entryPrice > 0));
-                  const totalEntries = paidSpots.reduce((sum, s) => sum + (s.entryPrice ?? 0), 0);
+                  const paidSpots = allSpots.filter((s) => formatPrice(s).priceType === 'paid');
+                  const freeSpots = allSpots.filter((s) => formatPrice(s).priceType !== 'paid');
+                  const totalEntries = paidSpots.reduce((sum, s) => sum + getNumericPrice(s), 0);
 
-                  if (!cityPass) return (
-                    <div className="verdict skip" style={{ marginTop: 28 }}>
-                      <div className="verdict-top">
-                        <div className="verdict-badge">
-                          <div className="vb-ring" />
-                          <span className="vb-ic">🔍</span>
-                          <span className="vb-w">No data</span>
-                        </div>
-                        <div className="verdict-main">
-                          <div className="vm-k">No pass found</div>
-                          <h2>{selectedDest?.city ?? 'This city'} — <em>check manually</em></h2>
-                          <p>
-                            We don't have pass data for {selectedDest?.city} yet.{' '}
-                            <a href={`https://www.google.com/search?q=${encodeURIComponent((selectedDest?.city ?? '') + ' city tourist pass')}`} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--terracotta-deep)' }}>Search Google →</a>
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
+                  // Note: the Pass tab only renders when cityPass is non-null,
+                  // so the "no data" dead-end can never appear here.
 
                   if (days.length === 0 || allSpots.length === 0) return (
                     <div className="verdict skip" style={{ marginTop: 28 }}>
@@ -1363,7 +1433,7 @@ export default function TripDetailPage() {
                                       <div className="n">{s.name}</div>
                                       <div className="m">{s.category ?? s.cat}</div>
                                     </div>
-                                    <span className="pr-cost covered">€{s.entryPrice}</span>
+                                    <span className="pr-cost covered">€{getNumericPrice(s)}</span>
                                   </div>
                                 ))}
                               </div>
@@ -1387,7 +1457,7 @@ export default function TripDetailPage() {
                                       <div className="n">{s.name}</div>
                                       <div className="m">{s.category ?? s.cat}</div>
                                     </div>
-                                    <span className="pr-cost free">Free</span>
+                                    <span className="pr-cost free">{formatPrice(s).priceType === 'pass' ? 'Pass' : 'Free'}</span>
                                   </div>
                                 ))}
                               </div>
@@ -1667,6 +1737,9 @@ export default function TripDetailPage() {
             <h3 style={{ fontSize: '1rem', fontWeight: 700, marginBottom: 10, textAlign: 'center' }}>Refresh research?</h3>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', lineHeight: 1.65, textAlign: 'center', marginBottom: 24 }}>
               This will replace all current spots for {selectedDest?.city} with a fresh AI research run. Spots already added to your day plan will remain.
+              {' '}<strong style={{ color: 'var(--ink-soft)' }}>
+                {TRIP_REFRESH_LIMIT - destRefreshCount} of {TRIP_REFRESH_LIMIT} free refresh{TRIP_REFRESH_LIMIT - destRefreshCount !== 1 ? 'es' : ''} remaining.
+              </strong>
             </p>
             <div style={{ display: 'flex', gap: 10 }}>
               <button

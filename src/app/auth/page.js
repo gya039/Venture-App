@@ -2,7 +2,8 @@
 
 export const dynamic = 'force-dynamic';
 
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   signInWithEmailAndPassword,
@@ -54,6 +55,11 @@ const SPECTRUM = [
 ];
 
 export default function AuthPage() {
+  return <Suspense fallback={null}><AuthPageContent /></Suspense>;
+}
+
+function AuthPageContent() {
+  const searchParams = useSearchParams();
   const [mode,     setMode]     = useState('signin');
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
@@ -63,7 +69,9 @@ export default function AuthPage() {
 
   const clear      = () => { setError(''); setInfo(''); };
   const switchMode = (next) => { setMode(next); clear(); };
-  const goHome     = () => { window.location.href = '/'; };
+  const goHome     = () => {
+    window.location.href = searchParams?.get('redirect') ?? '/';
+  };
 
   const handleEmailAuth = async (e) => {
     e.preventDefault();

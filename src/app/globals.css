@@ -530,6 +530,9 @@ input, textarea, select { font-family: inherit; font-size: inherit; }
 
 /* ── Popup wrapper — filter only, NO transform/animation ── */
 .venture-popup {
+  /* Sit above all markers (inline zIndex 1–10) and hover tooltips (zIndex 20).
+     z-index works here because .mapboxgl-popup is position:absolute. */
+  z-index: 100;
   /* drop-shadow wraps the tip triangle too — unlike box-shadow */
   filter:
     drop-shadow(0 2px 4px  oklch(0.18 0.02 60 / 0.14))
