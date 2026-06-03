@@ -7,7 +7,7 @@ import { getAuth } from 'firebase/auth';
 import {
   initializeFirestore,
   persistentLocalCache,
-  persistentMultipleTabManager,
+  persistentSingleTabManager,
   getFirestore,
 } from 'firebase/firestore';
 
@@ -30,15 +30,17 @@ const app = apiKey
 
 export const auth = app ? getAuth(app) : null;
 
-// Enable offline persistence via IndexedDB so the last-read research data
-// (citySpots, trips, destinations, dayPlans) is available without a connection.
-// initializeFirestore must be called once before getFirestore.
+// Enable offline persistence via IndexedDB.
+// persistentSingleTabManager is used instead of persistentMultipleTabManager
+// because Safari (iOS/iPadOS) does not support SharedWorker, which the multi-tab
+// manager depends on. The single-tab manager uses plain IndexedDB and works
+// across all browsers. For a mobile-first PWA, single-tab is sufficient.
 export const db = app
   ? (() => {
       try {
         return initializeFirestore(app, {
           localCache: persistentLocalCache({
-            tabManager: persistentMultipleTabManager(),
+            tabManager: persistentSingleTabManager({ forceOwnership: true }),
           }),
         });
       } catch {
