@@ -6,8 +6,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import {
   initializeFirestore,
-  persistentLocalCache,
-  persistentSingleTabManager,
+  memoryLocalCache,
   getFirestore,
 } from 'firebase/firestore';
 
@@ -30,18 +29,16 @@ const app = apiKey
 
 export const auth = app ? getAuth(app) : null;
 
-// Enable offline persistence via IndexedDB.
-// persistentSingleTabManager is used instead of persistentMultipleTabManager
-// because Safari (iOS/iPadOS) does not support SharedWorker, which the multi-tab
-// manager depends on. The single-tab manager uses plain IndexedDB and works
-// across all browsers. For a mobile-first PWA, single-tab is sufficient.
+// Use in-memory Firestore cache — works on all browsers including Safari iOS/iPadOS.
+// IndexedDB-based persistence (persistentLocalCache) was causing silent hangs on
+// Safari because of SharedWorker/BroadcastChannel restrictions on that platform.
+// Memory cache has no cross-session persistence but is 100% compatible everywhere.
+// The service worker handles asset caching; Firestore handles its own network retry.
 export const db = app
   ? (() => {
       try {
         return initializeFirestore(app, {
-          localCache: persistentLocalCache({
-            tabManager: persistentSingleTabManager({ forceOwnership: true }),
-          }),
+          localCache: memoryLocalCache(),
         });
       } catch {
         // Already initialised (e.g. hot-reload) — fall back to getFirestore
