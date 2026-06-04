@@ -1421,6 +1421,7 @@ export default function TripDetailPage() {
               city={selectedDest?.city ?? ''}
               tripId={tripId}
               trip={trip}
+              accommodation={accommodation}
               selectedDest={selectedDest}
               user={user}
               onRefetch={refetchDays}

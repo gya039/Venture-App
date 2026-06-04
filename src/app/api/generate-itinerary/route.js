@@ -152,36 +152,56 @@ export async function POST(request) {
 
 ${accommodationHint}
 
-You have ${spotSummaries.length} available spots (mix of starred favourites and AI-discovered gems).
-You have ${daySummaries.length} days to fill.
+You have ${spotSummaries.length} available spots and ${daySummaries.length} days to fill.
 
-SPOTS AVAILABLE:
+SPOTS:
 ${JSON.stringify(spotSummaries, null, 1)}
 
-DAYS TO PLAN:
+DAYS:
 ${JSON.stringify(daySummaries, null, 1)}
 
-RULES:
-1. Assign 3–6 spots per day across morning / afternoon / evening slots (2-3 per slot max).
-2. Each spot can only appear once across the entire itinerary.
-3. Prioritise starred spots (isStarred: true) — include as many as possible.
-4. Check opening hours — do NOT assign a spot to a slot where it would be closed.
-   - morning = 08:00–12:00, afternoon = 12:00–18:00, evening = 18:00–late
-   - If openingHours says "closed" for that day's dayOfWeek, skip that spot.
-5. Geographically cluster spots within each day where possible — nearby spots on the same day saves travel time.
-6. Assign bar/nightlife/music spots to "evening" only.
-7. Assign museums, galleries, architecture spots to "morning" or "afternoon" only.
-8. Assign cafes, bakeries, markets to "morning".
-9. Balance the days — don't put all the best spots on day 1.
+══ SLOT DEFINITIONS ══
+morning   = 08:00 – 12:00
+afternoon = 12:00 – 18:00
+evening   = 18:00 – late night
 
-Return ONLY valid JSON (no markdown, no explanation):
+══ ABSOLUTE RULES — NEVER BREAK THESE ══
+1. Each spot may appear ONCE across the entire itinerary. No repeats.
+2. Assign 3–6 spots per day total (1–2 per slot). Do not overload any slot.
+3. Starred spots (isStarred: true) MUST be prioritised — include as many as possible before non-starred ones.
+4. Balance the days — spread good spots across all days, not just Day 1.
+
+══ OPENING HOURS — CHECK STRICTLY ══
+5. For each day you have a dayOfWeek. Look at the spot's openingHours for that weekday key (mon/tue/wed/thu/fri/sat/sun).
+   - If it says "closed" or the key is missing → DO NOT assign that spot that day. Skip it entirely.
+   - If the opening time is ≥ 18:00 → "evening" ONLY.
+   - If the closing time is ≤ 14:00 → "morning" ONLY.
+   - If a spot has no openingHours data → use category rules below.
+
+══ CATEGORY / TYPE RULES ══
+6. Bar, Nightlife, Music venue, Club, Pub (for drinks):
+   → "evening" ONLY. NEVER morning or afternoon. A bar that opens at 11:00 is still "evening" for planning purposes.
+7. Café, Bakery, Brunch spot, Market (food in morning):
+   → "morning" ONLY.
+8. Museum, Gallery, Art, History, Architecture, Monument:
+   → "morning" or "afternoon" ONLY. Never evening unless explicitly open late.
+9. Restaurant (sit-down dinner):
+   → "evening" preferred, "afternoon" acceptable.
+10. Park, Garden, Viewpoint, Outdoor:
+    → Any slot, but prefer "morning" or "afternoon" for daylight.
+
+══ GEOGRAPHY ══
+11. Cluster nearby spots within the same day. Use lat/lng to group spots that are close together — this reduces unnecessary travel.
+12. ${accommodationHint ? 'Start each day\'s route from the accommodation location when clustering.' : 'Try to plan each day as a logical walking/transit loop.'}
+
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {
   "assignments": [
-    { "dayId": "<dayId>", "slot": "morning|afternoon|evening", "spotId": "<spotId>", "spotName": "<spotName>" }
+    { "dayId": "<dayId>", "slot": "morning|afternoon|evening", "spotId": "<spotId>", "spotName": "<name>" }
   ]
 }
 
-The assignments array must only contain entries where the spot actually fits the day and slot.`;
+Only include assignments where the spot genuinely fits the day AND the slot. When in doubt, skip the spot.`;
 
     const result = await callOpenAI(prompt);
 

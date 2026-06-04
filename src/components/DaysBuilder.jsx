@@ -968,6 +968,7 @@ export default function DaysBuilder({
   city,
   tripId,
   trip,
+  accommodation,     // live accommodation state from page.js (overrides trip.accommodation)
   selectedDest,
   user,
   onRefetch,
@@ -976,6 +977,9 @@ export default function DaysBuilder({
   toast,
   events = [],       // recurring events (Glasgow only)
 }) {
+  // Resolve accommodation — prefer the live prop (instantly updated on save)
+  // fall back to trip.accommodation for backward compatibility
+  const resolvedAccommodation = accommodation ?? trip?.accommodation ?? null;
   /* ── Slot state (mirrors days prop, optimistically updated by DnD) ───────── */
   const [allSlots_, setAllSlots_] = useState(() => initSlots(days));
   const allSlotsRef = useRef(allSlots_);
@@ -1754,7 +1758,7 @@ export default function DaysBuilder({
               days={days}
               allSlots={allSlots_}
               dayColors={DAY_COLORS}
-              accommodation={trip?.accommodation ?? null}
+              accommodation={resolvedAccommodation}
               city={city}
             />
           )}
@@ -1774,7 +1778,7 @@ export default function DaysBuilder({
                   events={events}
                   onAddEvent={handleAddEvent}
                   dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
-                  accommodation={trip?.accommodation ?? null}
+                  accommodation={resolvedAccommodation}
                 />
               ))}
 
@@ -2006,8 +2010,11 @@ export default function DaysBuilder({
                   }}
                   style={{
                     width: '100%', marginBottom: 8, padding: '12px 14px',
-                    borderRadius: 10, border: `1.5px solid ${isSelected ? dayColor : 'var(--border)'}`,
-                    borderLeft: `4px solid ${dayColor}`,
+                    borderRadius: 10,
+                    borderTop:    `1.5px solid ${isSelected ? dayColor : 'var(--border)'}`,
+                    borderRight:  `1.5px solid ${isSelected ? dayColor : 'var(--border)'}`,
+                    borderBottom: `1.5px solid ${isSelected ? dayColor : 'var(--border)'}`,
+                    borderLeft:   `4px solid ${dayColor}`,
                     background: isSelected ? `color-mix(in oklch, ${dayColor} 8%, var(--card))` : 'var(--card)',
                     cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
                     display: 'flex', alignItems: 'center', gap: 10,
@@ -2078,10 +2085,8 @@ export default function DaysBuilder({
                       city,
                       days: selectedDays,
                       spots,
-                      accommodation: trip?.accommodation ?? null,
-                      savedSpotIds: [...Object.values(allSlots_).flatMap(
-                        (d) => Object.values(d).flatMap((arr) => arr.map((s) => s.id))
-                      )], // treat already-placed spots as "known interesting"
+                      accommodation: resolvedAccommodation,
+                      savedSpotIds: [...savedIds], // starred spots get priority in the AI prompt
                     }),
                   });
                   if (!res.ok) {

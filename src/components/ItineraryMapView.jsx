@@ -1,38 +1,38 @@
 'use client';
 
 /**
- * ItineraryMapView — shows ONLY the planned spots on a map,
- * connected by day-coloured route lines in visit order.
- * Used in the DaysBuilder "Map" view.
+ * ItineraryMapView — day-coloured route map for the Days planner.
  *
  * Props:
- *   days        – array of day objects (with .id, .dayNumber, .planDate)
- *   allSlots    – { [dayId]: { morning:[], afternoon:[], evening:[] } }
- *   dayColors   – array of hex colour strings (one per day, wraps)
+ *   days          – array of day objects (with .id, .dayNumber, .planDate)
+ *   allSlots      – { [dayId]: { morning:[], afternoon:[], evening:[] } }
+ *   dayColors     – array of hex colour strings (one per day, wraps)
  *   accommodation – { address, lat, lng } | null
- *   city        – string (for the empty state label)
+ *   city          – string (empty-state label)
  */
 
-import { useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState, useCallback } from 'react';
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? '';
 const SLOTS  = ['morning', 'afternoon', 'evening'];
 
-// Flatten a day's allSlots entry into an ordered array of spots with coords
 function orderedSpots(daySlots) {
   return SLOTS.flatMap((s) => daySlots?.[s] ?? [])
     .filter((sp) => sp.lat && sp.lng && !sp.coordsMissing);
 }
 
 export default function ItineraryMapView({ days = [], allSlots = {}, dayColors = [], accommodation = null, city = '' }) {
-  const containerRef = useRef(null);
-  const mapRef       = useRef(null);
-  const mglRef       = useRef(null);
-  const accomRef     = useRef(null);
-  const [ready, setReady] = useState(false);
-  const [err,   setErr]   = useState(null);
+  const containerRef    = useRef(null);
+  const mapRef          = useRef(null);
+  const mglRef          = useRef(null);
+  const accomRef        = useRef(null);
+  const markersByDay    = useRef({}); // { [dayId]: Marker[] }
 
-  // ── Init map ────────────────────────────────────────────────────────────────
+  const [ready,       setReady]       = useState(false);
+  const [err,         setErr]         = useState(null);
+  const [visibleDays, setVisibleDays] = useState(new Set());
+
+  // ── Init map ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!TOKEN) { setErr('no-token'); return; }
     if (!containerRef.current || mapRef.current) return;
@@ -48,18 +48,16 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         container:  containerRef.current,
         style:      'mapbox://styles/mapbox/dark-v11',
         zoom:       12,
-        center:     [0, 51],   // overwritten by fitBounds below
+        center:     [0, 51],
         interactive: true,
         attributionControl: false,
       });
 
       map.on('load', () => {
         if (cancelled) { map.remove(); return; }
-        mapRef.current = mgl; // store mgl so render effect can use it
         setReady(true);
       });
 
-      // Store map instance separately
       mapRef.current = map;
     }).catch(() => setErr('load-failed'));
 
@@ -71,13 +69,17 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     };
   }, []); // eslint-disable-line
 
-  // ── Draw / update markers + routes whenever data or ready state changes ─────
+  // ── Reset visible days when the day list changes ──────────────────────────────
+  useEffect(() => {
+    setVisibleDays(new Set(days.map((d) => d.id)));
+  }, [days.map((d) => d.id).join(',')]); // eslint-disable-line
+
+  // ── Draw / update whenever data or ready state changes ────────────────────────
   useEffect(() => {
     const map = mapRef.current;
     const mgl = mglRef.current;
     if (!map || !mgl || !ready) return;
 
-    // Wait for style to be fully loaded before adding sources/layers
     if (!map.isStyleLoaded()) {
       map.once('styledata', () => renderAll(map, mgl));
       return;
@@ -85,26 +87,82 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     renderAll(map, mgl);
   }, [days, allSlots, dayColors, accommodation, ready]); // eslint-disable-line
 
-  function renderAll(map, mgl) {
-    // ── Clean up previous markers and sources ──
-    if (accomRef.current) { accomRef.current.remove(); accomRef.current = null; }
+  // ── Toggle a single day's visibility ─────────────────────────────────────────
+  const toggleDay = useCallback((dayId, solo = false) => {
+    const map = mapRef.current;
 
-    // Remove old route sources/layers
+    setVisibleDays((prev) => {
+      let next;
+
+      if (solo) {
+        // Solo mode: if this day is already the only visible one, show all; else show only this day
+        if (prev.size === 1 && prev.has(dayId)) {
+          next = new Set(days.map((d) => d.id));
+        } else {
+          next = new Set([dayId]);
+        }
+      } else {
+        next = new Set(prev);
+        if (next.has(dayId)) next.delete(dayId);
+        else next.add(dayId);
+      }
+
+      // Apply visibility to layers + markers
+      days.forEach((d) => {
+        const visible = next.has(d.id);
+        if (map) {
+          try { map.setLayoutProperty(`itin-route-line-${d.id}`, 'visibility', visible ? 'visible' : 'none'); } catch {}
+        }
+        (markersByDay.current[d.id] ?? []).forEach((m) => {
+          m.getElement().style.display = visible ? '' : 'none';
+        });
+      });
+
+      // Fit camera to the newly visible days
+      if (map) fitToVisible(map, next);
+
+      return next;
+    });
+  }, [days]); // eslint-disable-line
+
+  // ── Fit map to a given set of visible day IDs ─────────────────────────────────
+  function fitToVisible(map, visSet) {
+    const pts = [];
+    if (accommodation?.lat && accommodation?.lng) pts.push([accommodation.lng, accommodation.lat]);
+    days.forEach((d) => {
+      if (!visSet.has(d.id)) return;
+      orderedSpots(allSlots[d.id]).forEach((sp) => pts.push([sp.lng, sp.lat]));
+    });
+    if (pts.length === 1) { map.flyTo({ center: pts[0], zoom: 14, duration: 600 }); return; }
+    if (pts.length < 1) return;
+    const lngs = pts.map((p) => p[0]);
+    const lats  = pts.map((p) => p[1]);
+    map.fitBounds(
+      [[Math.min(...lngs) - 0.006, Math.min(...lats) - 0.006],
+       [Math.max(...lngs) + 0.006, Math.max(...lats) + 0.006]],
+      { padding: 60, maxZoom: 15, duration: 600 },
+    );
+  }
+
+  // ── Render all markers + route lines ─────────────────────────────────────────
+  function renderAll(map, mgl) {
+    // Clean up previous markers
+    if (accomRef.current) { accomRef.current.remove(); accomRef.current = null; }
+    Object.values(markersByDay.current).flat().forEach((m) => { try { m.remove(); } catch {} });
+    markersByDay.current = {};
+
+    // Remove previous route sources / layers
     const style = map.getStyle();
     (style?.layers ?? []).forEach((l) => {
       if (l.id.startsWith('itin-route-')) map.removeLayer(l.id);
     });
-    (Object.keys(style?.sources ?? {})).forEach((k) => {
+    Object.keys(style?.sources ?? {}).forEach((k) => {
       if (k.startsWith('itin-route-') || k.startsWith('itin-spots-')) map.removeSource(k);
     });
 
-    // Remove old spot markers
-    const existing = document.querySelectorAll('.itin-spot-marker');
-    existing.forEach((el) => el.remove());
-
     const allPoints = [];
 
-    // ── Accommodation home-base pin (matches Research map style) ──────────────
+    // ── Accommodation home-base pin ───────────────────────────────────────────
     if (accommodation?.lat && accommodation?.lng) {
       allPoints.push([accommodation.lng, accommodation.lat]);
 
@@ -114,9 +172,7 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         zIndex: '100', cursor: 'default',
         filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.55))',
-        pointerEvents: 'none',
       });
-      wrapper.className = 'itin-spot-marker';
 
       const head = document.createElement('div');
       Object.assign(head.style, {
@@ -128,7 +184,6 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         flexShrink: 0,
       });
-
       const icon = document.createElement('div');
       Object.assign(icon.style, { transform: 'rotate(45deg)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginLeft: '5px', marginBottom: '5px' });
       icon.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="white" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>';
@@ -137,16 +192,20 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
 
       accomRef.current = new mgl.Marker({ element: wrapper, anchor: 'bottom-left' })
         .setLngLat([accommodation.lng, accommodation.lat])
+        .setPopup(new mgl.Popup({ offset: 20, closeButton: false, maxWidth: '200px' })
+          .setHTML(`<div style="padding:10px 14px"><div style="font-family:monospace;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#f59e0b;margin-bottom:3px">HOME BASE</div><div style="font-size:13px;font-weight:600;color:#1a1a1a;line-height:1.3">${accommodation.address}</div></div>`))
         .addTo(map);
     }
 
-    // ── Per-day: spot markers + route line ────────────────────────────────────
+    // ── Per-day routes + markers ──────────────────────────────────────────────
     days.forEach((day, idx) => {
       const color  = dayColors[idx % dayColors.length] ?? '#f59e0b';
       const spots  = orderedSpots(allSlots[day.id]);
       if (!spots.length) return;
 
-      const coords = spots.map((sp) => [sp.lng, sp.lat]);
+      markersByDay.current[day.id] = [];
+
+      const coords  = spots.map((sp) => [sp.lng, sp.lat]);
       allPoints.push(...coords);
 
       // Route polyline
@@ -158,51 +217,51 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
           data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } },
         });
         map.addLayer({
-          id:   layerId,
-          type: 'line',
+          id:     layerId,
+          type:   'line',
           source: srcId,
           layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: {
-            'line-color':   color,
-            'line-width':   2.5,
-            'line-opacity': 0.7,
+          paint:  {
+            'line-color':     color,
+            'line-width':     2.5,
+            'line-opacity':   0.75,
             'line-dasharray': [1, 2.5],
           },
         });
       }
 
-      // Spot markers — numbered circles in the day colour
+      // Numbered spot markers
       spots.forEach((sp, i) => {
         const el = document.createElement('div');
-        el.className = 'itin-spot-marker';
         Object.assign(el.style, {
           width: '26px', height: '26px', borderRadius: '50%',
-          background: color,
-          border: '2.5px solid #fff',
+          background: color, border: '2.5px solid #fff',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: '10px', fontWeight: '700', color: '#000',
           boxShadow: `0 0 8px ${color}60, 0 2px 6px rgba(0,0,0,0.4)`,
-          cursor: 'default', userSelect: 'none', zIndex: '5',
-          fontFamily: 'var(--font-sans, sans-serif)',
+          cursor: 'pointer', userSelect: 'none', zIndex: '5',
+          fontFamily: 'sans-serif',
         });
         el.textContent = i + 1;
 
-        new mgl.Marker({ element: el, anchor: 'center' })
+        const marker = new mgl.Marker({ element: el, anchor: 'center' })
           .setLngLat([sp.lng, sp.lat])
           .setPopup(
-            new mgl.Popup({ offset: 16, closeButton: false, className: 'venture-popup', maxWidth: '220px' })
-              .setHTML(`<div style="padding:10px 14px"><div style="font-family:var(--mono,monospace);font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:3px">Day ${day.dayNumber} · Stop ${i + 1}</div><div style="font-size:14px;font-weight:600;color:#1a1a1a;line-height:1.2">${sp.name}</div></div>`)
+            new mgl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
+              .setHTML(`<div style="padding:10px 14px"><div style="font-family:monospace;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:3px">Day ${day.dayNumber} · Stop ${i + 1}</div><div style="font-size:14px;font-weight:600;color:#1a1a1a;line-height:1.2">${sp.name}</div>${sp.category ? `<div style="font-size:11px;color:#666;margin-top:3px">${sp.category}</div>` : ''}</div>`)
           )
           .addTo(map);
+
+        markersByDay.current[day.id].push(marker);
       });
     });
 
-    // ── Fit map to all points ─────────────────────────────────────────────────
+    // ── Fit to all points ─────────────────────────────────────────────────────
     if (allPoints.length === 1) {
       map.flyTo({ center: allPoints[0], zoom: 14 });
     } else if (allPoints.length > 1) {
       const lngs = allPoints.map((p) => p[0]);
-      const lats = allPoints.map((p) => p[1]);
+      const lats  = allPoints.map((p) => p[1]);
       map.fitBounds(
         [[Math.min(...lngs) - 0.006, Math.min(...lats) - 0.006],
          [Math.max(...lngs) + 0.006, Math.max(...lats) + 0.006]],
@@ -211,7 +270,7 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     }
   }
 
-  // ── Error / empty states ────────────────────────────────────────────────────
+  // ── Error state ───────────────────────────────────────────────────────────────
   if (err === 'no-token') {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 10, color: 'var(--muted)', fontSize: '0.82rem' }}>
@@ -221,7 +280,8 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     );
   }
 
-  const totalPlanned = days.reduce((n, d) => n + orderedSpots(allSlots[d.id]).length, 0);
+  const daysWithSpots = days.filter((d) => orderedSpots(allSlots[d.id]).length > 0);
+  const totalPlanned  = daysWithSpots.reduce((n, d) => n + orderedSpots(allSlots[d.id]).length, 0);
 
   return (
     <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
@@ -234,14 +294,10 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         </div>
       )}
 
-      {/* Empty state overlay */}
+      {/* Empty state */}
       {ready && totalPlanned === 0 && (
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
-          <div style={{
-            background: 'rgba(14,14,22,0.82)', backdropFilter: 'blur(10px)',
-            border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14,
-            padding: '18px 24px', textAlign: 'center', maxWidth: 260,
-          }}>
+          <div style={{ background: 'rgba(14,14,22,0.82)', backdropFilter: 'blur(10px)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, padding: '18px 24px', textAlign: 'center', maxWidth: 260 }}>
             <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.82rem', lineHeight: 1.6 }}>
               Add spots to your days to see the route map for {city || 'your trip'}.
             </p>
@@ -249,25 +305,60 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         </div>
       )}
 
-      {/* Day legend — bottom-left */}
-      {ready && totalPlanned > 0 && (
+      {/* Interactive day legend — bottom-left */}
+      {ready && daysWithSpots.length > 0 && (
         <div style={{
-          position: 'absolute', bottom: 16, left: 10,
-          background: 'rgba(14,14,22,0.88)', backdropFilter: 'blur(8px)',
-          border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10,
-          padding: '8px 12px', display: 'flex', flexDirection: 'column', gap: 5,
-          zIndex: 10,
+          position: 'absolute', bottom: 16, left: 10, zIndex: 10,
+          background: 'rgba(14,14,22,0.9)', backdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255,255,255,0.1)', borderRadius: 12,
+          padding: '8px 6px',
+          display: 'flex', flexDirection: 'column', gap: 2,
         }}>
-          {days.filter((d) => orderedSpots(allSlots[d.id]).length > 0).map((day, idx) => {
-            const color = dayColors[idx % dayColors.length] ?? '#f59e0b';
-            const count = orderedSpots(allSlots[day.id]).length;
+          {/* "All days" reset — only shown when not all days are visible */}
+          {visibleDays.size < daysWithSpots.length && (
+            <button
+              type="button"
+              onClick={() => {
+                const allIds = new Set(days.map((d) => d.id));
+                setVisibleDays(allIds);
+                days.forEach((d) => {
+                  if (mapRef.current) {
+                    try { mapRef.current.setLayoutProperty(`itin-route-line-${d.id}`, 'visibility', 'visible'); } catch {}
+                  }
+                  (markersByDay.current[d.id] ?? []).forEach((m) => { m.getElement().style.display = ''; });
+                });
+                if (mapRef.current) fitToVisible(mapRef.current, allIds);
+              }}
+              style={{ padding: '4px 10px', marginBottom: 4, borderRadius: 7, border: '1px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.08)', color: 'rgba(255,255,255,0.7)', fontSize: '0.63rem', fontWeight: 700, cursor: 'pointer', letterSpacing: '0.04em' }}
+            >
+              Show all
+            </button>
+          )}
+
+          {daysWithSpots.map((day, idx) => {
+            const color   = dayColors[idx % dayColors.length] ?? '#f59e0b';
+            const count   = orderedSpots(allSlots[day.id]).length;
+            const visible = visibleDays.has(day.id);
             return (
-              <div key={day.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-                <span style={{ fontSize: '0.68rem', color: 'rgba(255,255,255,0.75)', whiteSpace: 'nowrap' }}>
+              <button
+                key={day.id}
+                type="button"
+                title="Click to solo this day · click again to show all"
+                onClick={() => toggleDay(day.id, true)}
+                style={{
+                  padding: '6px 10px', borderRadius: 8,
+                  border: `1px solid ${visible ? color + '50' : 'rgba(255,255,255,0.08)'}`,
+                  background: visible ? `${color}18` : 'transparent',
+                  cursor: 'pointer', textAlign: 'left', transition: 'all 0.15s',
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  opacity: visible ? 1 : 0.38,
+                }}
+              >
+                <div style={{ width: 10, height: 10, borderRadius: '50%', background: visible ? color : 'rgba(255,255,255,0.3)', flexShrink: 0, transition: 'background 0.15s' }} />
+                <span style={{ fontSize: '0.68rem', color: visible ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.4)', whiteSpace: 'nowrap', fontWeight: visible ? 600 : 400 }}>
                   Day {day.dayNumber} · {count} stop{count !== 1 ? 's' : ''}
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>
