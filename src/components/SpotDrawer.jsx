@@ -113,32 +113,57 @@ export default function SpotDrawer({ spot, days = [], userId, onClose, onAddToDa
 
         <div className="drawer-scroll" style={{ paddingBottom: 24 }}>
 
-          {/* ── Photo placeholder ── */}
+          {/* ── Satellite map header ── */}
           <div className="dr-photo">
-            <span className="ph-lab">
-              [ photo · {(spot.category ?? 'spot').toLowerCase()} · {spot.city ?? ''} ]
-            </span>
+            {(() => {
+              const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+              const lat   = spot.lat ?? spot.coordinates?.lat;
+              const lng   = spot.lng ?? spot.coordinates?.lng;
+              if (token && lat && lng) {
+                // Mapbox Static Images: satellite-streets, zoom 17, amber pin, @2x
+                const marker = `pin-l+f59e0b(${lng},${lat})`;
+                const src = `https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/static/${marker}/${lng},${lat},17/900x420@2x?access_token=${token}`;
+                return (
+                  <>
+                    <img
+                      src={src}
+                      alt={`${spot.name} location`}
+                      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                      draggable={false}
+                    />
+                    {/* Gradient so overlaid text/badges stay legible */}
+                    <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.28) 0%, transparent 40%, transparent 55%, rgba(0,0,0,0.45) 100%)' }} />
+                  </>
+                );
+              }
+              // No coords — keep stripe placeholder, show coord-missing label
+              return (
+                <span className="ph-lab">
+                  [ {(spot.category ?? 'spot').toLowerCase()} · {spot.city ?? ''} ]
+                </span>
+              );
+            })()}
 
             {/* Visited toggle */}
-            <label style={{ position: 'absolute', left: 14, top: 13, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer' }}>
+            <label style={{ position: 'absolute', left: 14, top: 13, display: 'flex', alignItems: 'center', gap: 5, cursor: 'pointer', zIndex: 2 }}>
               <input
                 type="checkbox"
                 checked={visited}
                 onChange={handleVisitedToggle}
                 style={{ width: 12, height: 12, accentColor: 'var(--olive)', cursor: 'pointer' }}
               />
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: visited ? 'var(--olive)' : 'var(--muted)', fontWeight: 700 }}>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 9, letterSpacing: '0.08em', textTransform: 'uppercase', color: visited ? '#86efac' : 'rgba(255,255,255,0.75)', fontWeight: 700, textShadow: '0 1px 3px rgba(0,0,0,0.5)' }}>
                 {visited ? 'Visited ✓' : 'Mark visited'}
               </span>
             </label>
 
             {/* Hero medallion */}
-            <div className="dr-hero">
+            <div className="dr-hero" style={{ zIndex: 2 }}>
               <ScoreMedallion score={spot.hiddennessScore ?? 1} size={74} animate showDen />
             </div>
 
             {/* Tier band */}
-            <span className="dr-heroband">{level.label}</span>
+            <span className="dr-heroband" style={{ zIndex: 2 }}>{level.label}</span>
           </div>
 
           {/* ── Body ── */}

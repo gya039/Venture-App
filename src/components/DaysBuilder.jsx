@@ -45,6 +45,7 @@ import {
   updateTripAccommodation,
 } from '@/lib/db';
 import { travelChip, haversineKm, fmtKm } from '@/lib/travelTime';
+import ItineraryMapView from '@/components/ItineraryMapView';
 import { exportItineraryPDF } from '@/lib/pdfExport';
 import { track } from '@/lib/analytics';
 
@@ -950,6 +951,9 @@ export default function DaysBuilder({
   /* ── Tap-to-place state (touch only) ─────────────────────────────────────── */
   const [placingSpot, setPlacingSpot] = useState(null); // spot selected for placement
 
+  /* ── Plan view toggle ('list' | 'map') ──────────────────────────────────── */
+  const [planView, setPlanView] = useState('list');
+
   /* ── Mobile panel toggle ('picker' | 'planner') ─────────────────────────── */
   const [mobilePanel, setMobilePanel] = useState('planner');
 
@@ -1557,6 +1561,21 @@ export default function DaysBuilder({
             display: 'flex', alignItems: 'center', gap: 10,
             background: 'var(--bg)',
           }}>
+            {/* List / Map toggle */}
+            <div style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', flexShrink: 0 }}>
+              {[['list', '☰ List'], ['map', '🗺 Map']].map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setPlanView(v)}
+                  style={{
+                    padding: '5px 10px', border: 'none', fontSize: '0.73rem',
+                    background: planView === v ? 'var(--accent-dim)' : 'transparent',
+                    color:      planView === v ? 'var(--accent)' : 'var(--muted)',
+                    fontWeight: planView === v ? 600 : 400,
+                    cursor: 'pointer', transition: 'all 0.15s',
+                  }}
+                >{label}</button>
+              ))}
+            </div>
+
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               {totalSpots > 0 && (
                 <>
@@ -1626,44 +1645,57 @@ export default function DaysBuilder({
             </button>
           </div>
 
-          {/* Scrollable day list */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
-            {days.map((day, dayIndex) => (
-              <DaySection
-                key={day.id}
-                day={day}
-                slots={allSlots_[day.id] ?? { morning: [], afternoon: [], evening: [] }}
-                onRemove={handleRemove}
-                isTouch={isTouch}
-                placingSpot={placingSpot}
-                onPlaceHere={handlePlaceSpot}
-                events={events}
-                onAddEvent={handleAddEvent}
-                dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
-              />
-            ))}
+          {/* ── Itinerary map view ── */}
+          {planView === 'map' && (
+            <ItineraryMapView
+              days={days}
+              allSlots={allSlots_}
+              dayColors={DAY_COLORS}
+              accommodation={trip?.accommodation ?? null}
+              city={city}
+            />
+          )}
 
-            {/* No spots yet */}
-            {totalSpots === 0 && (
-              <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
-                <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>📅</div>
-                <p style={{ fontSize: '0.88rem', lineHeight: 1.7, marginBottom: 18, maxWidth: 320, margin: '0 auto 18px' }}>
-                  Star spots in Research, then tap + on any spot to add it to your plan.
-                </p>
-                <button
-                  type="button"
-                  onClick={onSwitchToResearch}
-                  style={{
-                    background: 'var(--accent)', color: '#000', border: 'none',
-                    borderRadius: 8, padding: '10px 22px', fontWeight: 600,
-                    fontSize: '0.875rem', cursor: 'pointer',
-                  }}
-                >
-                  ← Research spots
-                </button>
-              </div>
-            )}
-          </div>
+          {/* ── Day list view ── */}
+          {planView === 'list' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+              {days.map((day, dayIndex) => (
+                <DaySection
+                  key={day.id}
+                  day={day}
+                  slots={allSlots_[day.id] ?? { morning: [], afternoon: [], evening: [] }}
+                  onRemove={handleRemove}
+                  isTouch={isTouch}
+                  placingSpot={placingSpot}
+                  onPlaceHere={handlePlaceSpot}
+                  events={events}
+                  onAddEvent={handleAddEvent}
+                  dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
+                />
+              ))}
+
+              {/* No spots yet */}
+              {totalSpots === 0 && (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
+                  <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>📅</div>
+                  <p style={{ fontSize: '0.88rem', lineHeight: 1.7, marginBottom: 18, maxWidth: 320, margin: '0 auto 18px' }}>
+                    Star spots in Research, then tap + on any spot to add it to your plan.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onSwitchToResearch}
+                    style={{
+                      background: 'var(--accent)', color: '#000', border: 'none',
+                      borderRadius: 8, padding: '10px 22px', fontWeight: 600,
+                      fontSize: '0.875rem', cursor: 'pointer',
+                    }}
+                  >
+                    ← Research spots
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

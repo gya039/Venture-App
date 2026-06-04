@@ -98,12 +98,8 @@ export default function SpotCard({
       {/* Score medallion */}
       <ScoreMedallion score={score} size={50} animate={reveal} />
 
-      {/* Text block — click to open drawer */}
-      <div
-        className="sc-main"
-        onClick={(e) => { if (onOpenDrawer) { e.stopPropagation(); onOpenDrawer(spot); } }}
-        style={{ cursor: onOpenDrawer ? 'pointer' : 'inherit' }}
-      >
+      {/* Text block — click locates on map (outer card onSelect); drawer via View → button */}
+      <div className="sc-main">
         <div className="sc-cat">
           {catLabel}{spot?.neighbourhood ? ` · ${spot.neighbourhood}` : ''}
         </div>
@@ -163,7 +159,7 @@ export default function SpotCard({
         )}
       </div>
 
-      {/* Action buttons — labeled so Save vs "Add to day" are self-explanatory */}
+      {/* Action buttons */}
       <div className="sc-acts">
         {/* Save / Saved */}
         <button

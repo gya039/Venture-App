@@ -351,23 +351,29 @@ export default function MapView({
     if (spot.description) {
       const desc = document.createElement('p');
       Object.assign(desc.style, {
-        fontSize: '0.78rem', color: '#aaa', lineHeight: '1.5',
-        margin: '6px 0 0', display: '-webkit-box',
-        WebkitLineClamp: '2', WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        fontSize: '0.78rem', color: '#999', lineHeight: '1.55',
+        padding: '0 18px 10px', margin: '0',
       });
-      desc.textContent = spot.description;
+      // Hard JS truncation — reliable cross-browser, guarantees the … always appears
+      const MAX = 130;
+      desc.textContent = spot.description.length > MAX
+        ? spot.description.slice(0, MAX).trimEnd() + '…'
+        : spot.description;
       root.appendChild(desc);
     }
 
     if (spot.address) {
       const addrRow = document.createElement('div');
       addrRow.className = 'vpc-addr-row';
+      // min-width:0 lets the flex child shrink and honour text-overflow:ellipsis
+      Object.assign(addrRow.style, { minWidth: '0', overflow: 'hidden' });
       const icon = document.createElement('span');
       icon.className = 'vpc-addr-icon';
       icon.textContent = '📍';
       addrRow.appendChild(icon);
       const addr = document.createElement('span');
       addr.className = 'vpc-addr';
+      addr.style.minWidth = '0';
       addr.textContent = spot.address;
       addrRow.appendChild(addr);
       root.appendChild(addrRow);
