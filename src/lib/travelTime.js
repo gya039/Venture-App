@@ -45,3 +45,68 @@ export function fmtKm(km) {
   if (km < 1) return `${Math.round(km * 1000)}m`;
   return `${km.toFixed(1)}km`;
 }
+
+/**
+ * Total straight-line distance (km) along a sequence of spots.
+ * Skips legs where either spot has no coordinates.
+ */
+export function totalDistKm(spots) {
+  let total = 0;
+  for (let i = 0; i < spots.length - 1; i++) {
+    const a = spots[i], b = spots[i + 1];
+    if (a?.lat && a?.lng && b?.lat && b?.lng && !a.coordsMissing && !b.coordsMissing) {
+      total += haversineKm(a.lat, a.lng, b.lat, b.lng);
+    }
+  }
+  return total;
+}
+
+/**
+ * Nearest-neighbour route suggestion for a day's spots.
+ *
+ * startLat / startLng — accommodation coordinates (used as the route start).
+ *   If omitted, starts from the first geocoded spot.
+ *
+ * Returns the spots array reordered to minimise total straight-line travel.
+ * Spots without coordinates are appended at the end unchanged.
+ *
+ * Complexity: O(n²) — fine for the 3–15 spots typical in a day plan.
+ */
+export function suggestOrder(spots, startLat = null, startLng = null) {
+  const withCoords = spots.filter((s) => s.lat && s.lng && !s.coordsMissing);
+  const noCoords   = spots.filter((s) => !s.lat || !s.lng ||  s.coordsMissing);
+
+  if (withCoords.length <= 1) return spots; // nothing to optimise
+
+  const remaining = [...withCoords];
+  const ordered   = [];
+
+  let curLat, curLng;
+
+  if (startLat != null && startLng != null) {
+    // Start route from accommodation
+    curLat = startLat;
+    curLng = startLng;
+  } else {
+    // No accommodation — start from the first geocoded spot
+    const first = remaining.shift();
+    ordered.push(first);
+    curLat = first.lat;
+    curLng = first.lng;
+  }
+
+  while (remaining.length > 0) {
+    let bestIdx  = 0;
+    let bestDist = haversineKm(curLat, curLng, remaining[0].lat, remaining[0].lng);
+    for (let i = 1; i < remaining.length; i++) {
+      const d = haversineKm(curLat, curLng, remaining[i].lat, remaining[i].lng);
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    }
+    const next = remaining.splice(bestIdx, 1)[0];
+    ordered.push(next);
+    curLat = next.lat;
+    curLng = next.lng;
+  }
+
+  return [...ordered, ...noCoords];
+}

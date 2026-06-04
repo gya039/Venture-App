@@ -44,7 +44,7 @@ import {
   saveTripAsTemplate,
   updateTripAccommodation,
 } from '@/lib/db';
-import { travelChip, haversineKm, fmtKm } from '@/lib/travelTime';
+import { travelChip, haversineKm, fmtKm, suggestOrder, totalDistKm } from '@/lib/travelTime';
 import ItineraryMapView from '@/components/ItineraryMapView';
 import { exportItineraryPDF } from '@/lib/pdfExport';
 import { track } from '@/lib/analytics';
@@ -600,20 +600,52 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent, dayColor = '#f59e0b' }) {
-  const [open,       setOpen]       = useState(true);
-  const [eventsOpen, setEventsOpen] = useState(false); // collapsed by default
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null }) {
+  const [open,          setOpen]          = useState(true);
+  const [eventsOpen,    setEventsOpen]    = useState(false);
+  const [suggDismissed, setSuggDismissed] = useState(false);
+  const [applying,      setApplying]      = useState(false);
 
   const allSpots = SLOTS.flatMap(s => slots[s] ?? []);
   const totalSpots    = allSpots.length;
   const totalCost     = allSpots.reduce((s, sp) => s + getNumericPrice(sp), 0);
   const totalDuration = allSpots.reduce((s, sp) => s + (sp.visitDurationMinutes ?? 0), 0);
 
-  let totalDistKm = 0;
-  for (let i = 0; i < allSpots.length - 1; i++) {
-    const a = allSpots[i], b = allSpots[i + 1];
-    if (a.lat && a.lng && b.lat && b.lng && !a.coordsMissing && !b.coordsMissing) {
-      totalDistKm += haversineKm(a.lat, a.lng, b.lat, b.lng);
+  // Use imported totalDistKm under a local alias to avoid shadowing the function import
+  const dayDistKm = totalDistKm(allSpots);
+
+  // ── Route suggestion (nearest-neighbour) ──────────────────────────────────
+  const suggested  = suggestOrder(allSpots, accommodation?.lat ?? null, accommodation?.lng ?? null);
+  const suggDistKm = totalDistKm(suggested);
+  const saving     = dayDistKm - suggDistKm;
+  // Show suggestion only when: 3+ spots with coords, saves >0.3 km, saves >15%
+  const geocodedCount = allSpots.filter(s => s.lat && s.lng && !s.coordsMissing).length;
+  const showSuggestion = !suggDismissed && geocodedCount >= 3 && saving > 0.3 && saving / dayDistKm > 0.15;
+
+  // Check if suggested order is meaningfully different from current
+  const currentIds  = allSpots.map(s => s.dayPlanSpotId).join(',');
+  const suggestedIds = suggested.map(s => s.dayPlanSpotId).join(',');
+  const isSameOrder = currentIds === suggestedIds;
+
+  async function applyOrder() {
+    if (applying) return;
+    setApplying(true);
+    try {
+      // Redistribute into slots proportionally based on original counts
+      const counts = SLOTS.map(sl => (slots[sl] ?? []).length);
+      let idx = 0;
+      for (let si = 0; si < SLOTS.length; si++) {
+        const slot = SLOTS[si];
+        for (let k = 0; k < counts[si]; k++) {
+          const spot = suggested[idx++];
+          if (spot) await updateDayPlanSpotSlot(spot.dayPlanSpotId, slot, k);
+        }
+      }
+      setSuggDismissed(true); // hide banner after applying
+    } catch (err) {
+      console.error('[DaySection] applyOrder error:', err);
+    } finally {
+      setApplying(false);
     }
   }
 
@@ -657,6 +689,49 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
       {/* Body */}
       {open && (
         <div style={{ padding: '14px 14px 10px' }}>
+
+          {/* ── Route suggestion banner ─────────────────────────────────── */}
+          {showSuggestion && !isSameOrder && (
+            <div style={{
+              marginBottom: 12, padding: '10px 12px',
+              borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10,
+              background: `color-mix(in oklch, ${dayColor} 10%, var(--card))`,
+              border: `1px solid color-mix(in oklch, ${dayColor} 30%, transparent)`,
+            }}>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke={dayColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                <circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/>
+              </svg>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--ink)', margin: 0 }}>
+                  Better route saves {fmtKm(saving)}
+                </p>
+                <p style={{ fontSize: '0.68rem', color: 'var(--muted)', margin: '2px 0 0', lineHeight: 1.4 }}>
+                  {accommodation?.address ? 'From your home base' : 'Nearest-neighbour reorder'} — {fmtKm(suggDistKm)} total vs {fmtKm(dayDistKm)} now
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={applyOrder}
+                disabled={applying}
+                style={{
+                  flexShrink: 0, padding: '5px 11px', borderRadius: 6,
+                  background: dayColor, border: 'none', color: '#000',
+                  fontSize: '0.72rem', fontWeight: 700,
+                  cursor: applying ? 'wait' : 'pointer', opacity: applying ? 0.6 : 1,
+                }}
+              >
+                {applying ? '…' : 'Optimise'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSuggDismissed(true)}
+                style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1.1rem', lineHeight: 1, padding: '0 2px' }}
+              >
+                ×
+              </button>
+            </div>
+          )}
+
           {SLOTS.map(slot => (
             <SlotZone
               key={slot}
@@ -1671,6 +1746,7 @@ export default function DaysBuilder({
                   events={events}
                   onAddEvent={handleAddEvent}
                   dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
+                  accommodation={trip?.accommodation ?? null}
                 />
               ))}
 
