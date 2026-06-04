@@ -96,12 +96,13 @@ function assembleTripsSync(tripDocs, destsByTripId) {
     const destinations = (destsByTripId[trip.id] ?? [])
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     return {
-      id:          trip.id,
-      name:        trip.name ?? null,
-      isMultiCity: trip.isMultiCity ?? false,
-      interests:   trip.interests ?? [],
-      coverPhoto:  trip.coverPhoto ?? null,
-      createdAt:   toISO(trip.createdAt),
+      id:            trip.id,
+      name:          trip.name ?? null,
+      isMultiCity:   trip.isMultiCity ?? false,
+      interests:     trip.interests ?? [],
+      coverPhoto:    trip.coverPhoto ?? null,
+      createdAt:     toISO(trip.createdAt),
+      accommodation: trip.accommodation ?? null,   // { address, lat, lng } | null
       destinations,
     };
   });
@@ -375,6 +376,12 @@ export async function cacheSpots(city, spots, force = false) {
   await batch.commit();
 
   return spotsToWrite.length;
+}
+
+/** Save (or clear) the accommodation address + geocoords for a trip */
+export async function updateTripAccommodation(tripId, accommodation) {
+  // accommodation: { address, lat, lng } or null to clear
+  await updateDoc(doc(db, 'trips', tripId), { accommodation: accommodation ?? null });
 }
 
 /** Mark a destination as research-complete */

@@ -16,6 +16,7 @@ import SpotDrawer from '@/components/SpotDrawer';
 import CountdownBadge from '@/components/CountdownBadge';
 import DayPlanColumn from '@/components/DayPlanColumn';
 import DaysBuilder from '@/components/DaysBuilder';
+import AccommodationField from '@/components/AccommodationField';
 import DayPassCalculator from '@/components/DayPassCalculator';
 import MapView from '@/components/MapView';
 import ErrorBoundary from '@/components/ErrorBoundary';
@@ -139,6 +140,10 @@ export default function TripDetailPage() {
 
   // Reset destination index when switching between trips
   useEffect(() => { setSelectedIdx(0); }, [tripId]);
+
+  // Local accommodation state so the map marker updates instantly on save
+  const [accommodation, setAccommodation] = useState(null);
+  useEffect(() => { setAccommodation(trip?.accommodation ?? null); }, [trip?.accommodation]);
 
   const [activeTab,      setActiveTab]     = useState('Research');
   const [filterInterests, setFilterInterests] = useState(new Set()); // multi-select category IDs
@@ -779,6 +784,12 @@ export default function TripDetailPage() {
           {/* ════════════════ RESEARCH ════════════════ */}
           {activeTab === 'Research' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 0 }}>
+              {/* Home base — input lives here so it's next to the map */}
+              <AccommodationField
+                tripId={tripId}
+                accommodation={accommodation}
+                onSaved={(val) => setAccommodation(val)}
+              />
 
 
               {/* Mobile view toggle — only for Spots sub-tab */}
@@ -1267,6 +1278,7 @@ export default function TripDetailPage() {
                         focusSpotId={selectedSpotId}
                         visitedIds={visitedIds}
                         fitRevision={mapFitRevision}
+                        accommodationMarker={accommodation?.lat ? accommodation : null}
                       />
                     </ErrorBoundary>
                   ) : (

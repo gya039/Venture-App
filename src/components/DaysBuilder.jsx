@@ -42,6 +42,7 @@ import {
   removeDayPlanSpot,
   updateDayPlanSpotSlot,
   saveTripAsTemplate,
+  updateTripAccommodation,
 } from '@/lib/db';
 import { travelChip, haversineKm, fmtKm } from '@/lib/travelTime';
 import { exportItineraryPDF } from '@/lib/pdfExport';
@@ -51,6 +52,9 @@ import { track } from '@/lib/analytics';
 const SLOTS      = ['morning', 'afternoon', 'evening'];
 const SLOT_LABEL = { morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening' };
 const SLOT_COLOR = { morning: '#f59e0b', afternoon: '#fb923c', evening: '#b45309' };
+
+// Distinct accent per day so the itinerary is visually readable at a glance
+const DAY_COLORS = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316'];
 
 // Category normalisation is now handled by src/lib/categories.js (categoryLabel).
 // All spot.category values are canonical Title Case — no local alias map needed.
@@ -85,6 +89,17 @@ function fmtDuration(mins) {
   const m = mins % 60;
   if (h > 0) return `${h}h${m > 0 ? `${m}m` : ''}`;
   return `${m}m`;
+}
+
+/* ── HouseIcon — used for accommodation marker everywhere ─────────────────── */
+function HouseIcon({ size = 15, color = 'var(--muted)' } = {}) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke={color}
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      <polyline points="9,22 9,12 15,12 15,22"/>
+    </svg>
+  );
 }
 
 /* ── GripIcon ──────────────────────────────────────────────────────────────── */
@@ -584,7 +599,7 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent, dayColor = '#f59e0b' }) {
   const [open,       setOpen]       = useState(true);
   const [eventsOpen, setEventsOpen] = useState(false); // collapsed by default
 
@@ -602,7 +617,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
   }
 
   return (
-    <div style={{ background: 'var(--card)', borderRadius: 12, border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 10 }}>
+    <div style={{ background: 'var(--card)', borderRadius: 12, border: '1px solid var(--border)', borderLeft: `3px solid ${dayColor}`, overflow: 'hidden', marginBottom: 10 }}>
       {/* Collapsible header */}
       <button
         type="button"
@@ -615,7 +630,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
         }}
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--ink)', lineHeight: 1 }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: dayColor, lineHeight: 1 }}>
             Day {day.dayNumber}
           </span>
           {day.planDate && (
@@ -624,7 +639,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
             </span>
           )}
           {totalSpots > 0 && (
-            <span style={{ fontSize: '0.63rem', fontWeight: 600, background: 'var(--accent-dim)', color: 'var(--accent)', padding: '2px 7px', borderRadius: 10 }}>
+            <span style={{ fontSize: '0.63rem', fontWeight: 600, background: `color-mix(in oklch, ${dayColor} 15%, transparent)`, color: dayColor, padding: '2px 7px', borderRadius: 10 }}>
               {totalSpots}
             </span>
           )}
@@ -729,6 +744,137 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
               )}
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── AccommodationField ────────────────────────────────────────────────────── */
+// Compact input with live Mapbox autocomplete (addresses + POIs).
+// Typing a hotel name, street address, or neighbourhood surfaces real suggestions
+// with exact coordinates — no guessing from raw text.
+const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? '';
+
+async function fetchAccomSuggestions(query) {
+  if (!query || query.length < 2 || !MAPBOX_TOKEN) return [];
+  try {
+    const url =
+      `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
+      `?types=address,poi&limit=6&access_token=${MAPBOX_TOKEN}`;
+    const res  = await fetch(url);
+    const data = await res.json();
+    return (data.features ?? []).map((f) => ({
+      name:      f.text,
+      fullName:  f.place_name,
+      lat:       f.center[1],
+      lng:       f.center[0],
+    }));
+  } catch { return []; }
+}
+
+function AccommodationField({ tripId, initial }) {
+  const [value,    setValue]    = useState(initial?.address ?? '');
+  const [saving,   setSaving]   = useState(false);
+  const [saved,    setSaved]    = useState(!!initial?.address);
+  const [editing,  setEditing]  = useState(!initial?.address);
+  const [suggs,    setSuggs]    = useState([]);
+  const [showSugg, setShowSugg] = useState(false);
+  const debRef = useRef(null);
+
+  useEffect(() => {
+    if (initial?.address && !editing) { setValue(initial.address); setSaved(true); }
+  }, [initial?.address]); // eslint-disable-line
+
+  function onType(val) {
+    setValue(val); setSaved(false);
+    clearTimeout(debRef.current);
+    if (val.length < 2) { setSuggs([]); setShowSugg(false); return; }
+    debRef.current = setTimeout(async () => {
+      const results = await fetchAccomSuggestions(val);
+      setSuggs(results);
+      setShowSugg(results.length > 0);
+    }, 260);
+  }
+
+  async function pickSuggestion(s) {
+    setValue(s.fullName);
+    setSuggs([]); setShowSugg(false);
+    setSaving(true);
+    try {
+      await updateTripAccommodation(tripId, { address: s.fullName, lat: s.lat, lng: s.lng });
+      setSaved(true); setEditing(false);
+    } catch (err) { console.error('[AccommodationField]', err); }
+    finally { setSaving(false); }
+  }
+
+  async function saveRaw() {
+    if (!value.trim()) { await updateTripAccommodation(tripId, null); setSaved(false); return; }
+    setSaving(true);
+    try {
+      // Last-chance geocode for typed text that wasn't picked from suggestions
+      const results = await fetchAccomSuggestions(value);
+      const best = results[0];
+      await updateTripAccommodation(tripId, best
+        ? { address: best.fullName, lat: best.lat, lng: best.lng }
+        : { address: value.trim(), lat: null, lng: null });
+      if (best) setValue(best.fullName);
+      setSaved(true); setEditing(false);
+    } catch (err) { console.error('[AccommodationField]', err); }
+    finally { setSaving(false); }
+  }
+
+  // Saved / display state
+  if (!editing && saved) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+        <HouseIcon />
+        <span style={{ fontSize: '0.75rem', color: 'var(--muted)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{value}</span>
+        <button type="button" onClick={() => { setEditing(true); setSuggs([]); setShowSugg(false); }}
+          style={{ background: 'none', border: 'none', color: 'var(--accent)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer', flexShrink: 0, padding: '2px 4px' }}>
+          Edit
+        </button>
+      </div>
+    );
+  }
+
+  // Editing / input state
+  return (
+    <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', flexShrink: 0, position: 'relative' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <HouseIcon />
+        <input
+          type="text"
+          placeholder="Hotel name, address, or neighbourhood…"
+          value={value}
+          onChange={e => onType(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter')  { setShowSugg(false); saveRaw(); }
+            if (e.key === 'Escape') { setShowSugg(false); setEditing(false); setValue(initial?.address ?? ''); }
+          }}
+          onBlur={() => setTimeout(() => setShowSugg(false), 180)}
+          style={{ flex: 1, border: 'none', background: 'transparent', color: 'var(--ink)', fontSize: '0.78rem', outline: 'none', minWidth: 0 }}
+          autoFocus={editing && !!initial?.address}
+        />
+        <button type="button" disabled={saving} onClick={saveRaw}
+          style={{ flexShrink: 0, padding: '4px 10px', borderRadius: 6, background: 'var(--accent)', border: 'none', color: '#000', fontSize: '0.72rem', fontWeight: 700, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.6 : 1 }}>
+          {saving ? '…' : 'Set'}
+        </button>
+      </div>
+
+      {/* Autocomplete dropdown */}
+      {showSugg && suggs.length > 0 && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 50, background: 'var(--card)', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 10px 10px', overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.3)' }}>
+          {suggs.map((s, i) => (
+            <button key={i} type="button" onMouseDown={() => pickSuggestion(s)}
+              style={{ width: '100%', padding: '9px 12px', background: 'none', border: 'none', borderBottom: i < suggs.length - 1 ? '1px solid var(--border)' : 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 1 }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--card-hover)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
+              <span style={{ fontSize: '0.68rem', color: 'var(--muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.fullName}</span>
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -1331,8 +1477,11 @@ export default function DaysBuilder({
                 {pickerMode === 'starred' ? (
                   <>
                     <div style={{ fontSize: '1.8rem', marginBottom: 10 }}>★</div>
-                    <p style={{ fontSize: '0.8rem', lineHeight: 1.6, marginBottom: 14 }}>
-                      No starred spots yet.<br />Star spots in Research to build your itinerary.
+                    <p style={{ fontSize: '0.8rem', lineHeight: 1.6, marginBottom: 6, color: 'var(--ink)' }}>
+                      No saved spots yet.
+                    </p>
+                    <p style={{ fontSize: '0.75rem', lineHeight: 1.65, marginBottom: 14, color: 'var(--muted)', maxWidth: 200, margin: '0 auto 14px' }}>
+                      ★ Save spots you like, then add them to a day to build your itinerary.
                     </p>
                     <button
                       type="button"
@@ -1479,7 +1628,7 @@ export default function DaysBuilder({
 
           {/* Scrollable day list */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
-            {days.map(day => (
+            {days.map((day, dayIndex) => (
               <DaySection
                 key={day.id}
                 day={day}
@@ -1490,6 +1639,7 @@ export default function DaysBuilder({
                 onPlaceHere={handlePlaceSpot}
                 events={events}
                 onAddEvent={handleAddEvent}
+                dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
               />
             ))}
 

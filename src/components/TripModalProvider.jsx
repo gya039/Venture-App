@@ -7,7 +7,7 @@
 import { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
-import { createTrip, generateDayPlans, getCityTemplates } from '@/lib/db';
+import { createTrip, generateDayPlans, getCityTemplates, updateTripAccommodation } from '@/lib/db';
 import InterestPicker from '@/components/InterestPicker';
 import { useToast } from '@/components/ToastProvider';
 import { track } from '@/lib/analytics';
@@ -83,6 +83,13 @@ export default function TripModalProvider({ children }) {
   const [error,   setError]   = useState('');
   const [seedInterests,  setSeedInterests]  = useState([]); // from onboarding
   const [startedAtDates, setStartedAtDates] = useState(false); // entered from city preview
+  // Accommodation — optional, collected on the Dates step
+  const [accomAddress, setAccomAddress] = useState('');
+  const [accomResult,  setAccomResult]  = useState(null); // { address, lat, lng } once picked
+  const [accomSuggs,   setAccomSuggs]   = useState([]);
+  const [accomShowSugg,setAccomShowSugg]= useState(false);
+  const [accomGeoding, setAccomGeoding] = useState(false);
+  const accomDebRef = useRef(null);
 
   // Mapbox autocomplete
   const [suggestions, setSuggestions] = useState([]);
@@ -125,6 +132,7 @@ export default function TripModalProvider({ children }) {
     setSeedInterests(prefillInterests);
     setSuggestions([]); setShowSugg(false);
     setTemplates([]); setTemplateCity('');
+    setAccomAddress(''); setAccomResult(null); setAccomSuggs([]); setAccomShowSugg(false);
     setOpen(true);
   }, []);
 
@@ -167,6 +175,40 @@ export default function TripModalProvider({ children }) {
     setSuggestions([]); setShowSugg(false);
   };
 
+  /* ── Accommodation autocomplete (addresses + POIs via Mapbox) ───────────── */
+  const onAccomType = (val) => {
+    setAccomAddress(val); setAccomResult(null);
+    clearTimeout(accomDebRef.current);
+    if (val.length < 2) { setAccomSuggs([]); setAccomShowSugg(false); return; }
+    setAccomGeoding(true);
+    accomDebRef.current = setTimeout(async () => {
+      try {
+        const token = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+        if (!token) return;
+        const r = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(val)}.json` +
+          `?types=address,poi&limit=6&access_token=${token}`
+        );
+        const d = await r.json();
+        const results = (d.features ?? []).map((f) => ({
+          name:     f.text,
+          fullName: f.place_name,
+          lat:      f.center[1],
+          lng:      f.center[0],
+        }));
+        setAccomSuggs(results);
+        setAccomShowSugg(results.length > 0);
+      } catch { /* non-blocking */ }
+      finally { setAccomGeoding(false); }
+    }, 260);
+  };
+
+  const pickAccomSugg = (s) => {
+    setAccomAddress(s.fullName);
+    setAccomResult({ address: s.fullName, lat: s.lat, lng: s.lng });
+    setAccomSuggs([]); setAccomShowSugg(false);
+  };
+
   /* ── Navigation ─────────────────────────────────────────────────────────── */
   const validate = () => {
     if (step === 0 && !city.trim()) {
@@ -203,6 +245,9 @@ export default function TripModalProvider({ children }) {
         }],
       });
       await generateDayPlans(destIds[0], user.uid, tripId, start, end);
+      // Save accommodation if entered (fire-and-forget — never blocks trip creation)
+      const accomToSave = accomResult ?? (accomAddress.trim() ? { address: accomAddress.trim(), lat: null, lng: null } : null);
+      if (accomToSave) updateTripAccommodation(tripId, accomToSave).catch(() => {});
       // Signal that the user has created their first trip (for PWA install prompt)
       localStorage.setItem('hasCreatedTrip', '1');
       window.dispatchEvent(new Event('venture:tripCreated'));
@@ -500,6 +545,61 @@ export default function TripModalProvider({ children }) {
                     </span>
                   </div>
                 )}
+
+                {/* Accommodation — optional, with live autocomplete */}
+                <div style={{ paddingTop: 4 }}>
+                  <label style={{ ...LABEL, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                    <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+                      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                      <polyline points="9,22 9,12 15,12 15,22"/>
+                    </svg>
+                    Where are you staying?
+                    <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)', fontSize: '0.72rem' }}>— optional</span>
+                  </label>
+                  <div style={{ position: 'relative' }}>
+                    <input
+                      type="text"
+                      placeholder="Hotel name, address, or neighbourhood…"
+                      value={accomAddress}
+                      onChange={(e) => onAccomType(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Escape') { setAccomShowSugg(false); } }}
+                      onBlur={() => setTimeout(() => setAccomShowSugg(false), 180)}
+                      style={{ ...INPUT, paddingRight: accomGeoding ? 36 : 14 }}
+                      onFocus={(e) => { e.target.style.borderColor = 'var(--accent)'; if (accomSuggs.length) setAccomShowSugg(true); }}
+                    />
+                    {accomGeoding && (
+                      <div style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, borderRadius: '50%', border: '2px solid var(--border)', borderTopColor: 'var(--accent)', animation: 'spin 0.7s linear infinite' }} />
+                    )}
+
+                    {/* Suggestions dropdown */}
+                    {accomShowSugg && accomSuggs.length > 0 && (
+                      <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 99, background: 'var(--surface)', border: '1px solid var(--border)', borderTop: 'none', borderRadius: '0 0 12px 12px', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.4)' }}>
+                        {accomSuggs.map((s, i) => (
+                          <button key={i} type="button" onMouseDown={() => pickAccomSugg(s)}
+                            style={{ width: '100%', padding: '12px 16px', background: 'none', border: 'none', borderBottom: i < accomSuggs.length - 1 ? '1px solid var(--border)' : 'none', textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}
+                            onMouseEnter={e => e.currentTarget.style.background = 'var(--card)'}
+                            onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                          >
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, color: 'var(--text-muted)' }}>
+                              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                              <polyline points="9,22 9,12 15,12 15,22"/>
+                            </svg>
+                            <div style={{ minWidth: 0 }}>
+                              <p style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</p>
+                              <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>{s.fullName}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {accomResult?.lat && (
+                    <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: 6, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9,22 9,12 15,12 15,22"/></svg>
+                      Pinned — will show as home base on your map
+                    </p>
+                  )}
+                </div>
               </div>
             )}
 

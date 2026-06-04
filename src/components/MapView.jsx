@@ -100,12 +100,14 @@ export default function MapView({
   focusSpotId = null,
   visitedIds = new Set(), fitRevision = 0,
   onFocusPinPixel = null,
+  accommodationMarker = null, // { lat, lng, address }
 }) {
   const containerRef     = useRef(null);
   const mapRef           = useRef(null);
   const mapboxglRef      = useRef(null);
   const markerMapRef     = useRef(new Map());   // spotId → { el, inner, marker, spot }
   const userMarkerRef    = useRef(null);
+  const accomMarkerRef   = useRef(null);  // accommodation / hotel pin
   const hasFitRef        = useRef(false);
   const onClickRef       = useRef(onSpotClick);
   const onOpenDrawerRef  = useRef(onOpenDrawer);
@@ -138,6 +140,11 @@ export default function MapView({
         0%   { box-shadow: 0 0 0 0   rgba(59,130,246,0.5), 0 2px 8px rgba(0,0,0,0.5); }
         70%  { box-shadow: 0 0 0 10px rgba(59,130,246,0),   0 2px 8px rgba(0,0,0,0.5); }
         100% { box-shadow: 0 0 0 0   rgba(59,130,246,0),   0 2px 8px rgba(0,0,0,0.5); }
+      }
+      @keyframes homePulse {
+        0%   { box-shadow: 0 0 0 0px  rgba(245,158,11,0.7), 0 4px 20px rgba(0,0,0,0.55); }
+        60%  { box-shadow: 0 0 0 10px rgba(245,158,11,0),   0 4px 20px rgba(0,0,0,0.55); }
+        100% { box-shadow: 0 0 0 0px  rgba(245,158,11,0),   0 4px 20px rgba(0,0,0,0.55); }
       }
     `;
     document.head.appendChild(style);
@@ -564,6 +571,83 @@ export default function MapView({
     map.flyTo({ center: [spot.lng, spot.lat], zoom: 15, duration: 500 });
   }, [focusSpotId, ready]); // eslint-disable-line
 
+  /* ── Accommodation marker — prominent "home base" pin ─────────────────────── */
+  // Teardrop/map-pin shape in amber: visually unlike score pins (circles+numbers)
+  // so the user can always locate their base at a glance. z-index 100 = always on top.
+  useEffect(() => {
+    const map = mapRef.current;
+    const mgl = mapboxglRef.current;
+    if (!map || !mgl || !ready) return;
+
+    if (accomMarkerRef.current) {
+      accomMarkerRef.current.remove();
+      accomMarkerRef.current = null;
+    }
+    if (!accommodationMarker?.lat || !accommodationMarker?.lng) return;
+
+    // Wrapper — Mapbox anchors at bottom-center (the pin tip)
+    const wrapper = document.createElement('div');
+    Object.assign(wrapper.style, {
+      width: '44px', height: '54px',
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      zIndex: '100', cursor: 'pointer',
+      filter: 'drop-shadow(0 4px 10px rgba(0,0,0,0.55))',
+    });
+
+    // Circular pin head — amber, rotated to point down-left, then icon rotated back
+    const head = document.createElement('div');
+    Object.assign(head.style, {
+      width: '44px', height: '44px',
+      borderRadius: '50% 50% 50% 0',
+      transform: 'rotate(-45deg)',
+      background: 'linear-gradient(135deg,#f59e0b,#d97706)',
+      border: '3px solid #fff',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      animation: 'homePulse 2.4s ease-out infinite',
+      flexShrink: 0,
+    });
+
+    // House icon — rotate 45° back to compensate for pin rotation
+    const icon = document.createElement('div');
+    Object.assign(icon.style, {
+      transform: 'rotate(45deg)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      marginLeft: '5px', marginBottom: '5px', // optical centre of rotated shape
+    });
+    // Filled white house — reads instantly as "home", unlike stroked score circles
+    icon.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="white" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>';
+
+    head.appendChild(icon);
+    wrapper.appendChild(head);
+
+    // Build popup content using the same .vpc-* classes as spot popups
+    const addr     = accommodationMarker.address ?? '';
+    const venueName = addr.split(',')[0].trim() || 'Your accommodation';
+    const restAddr  = addr.includes(',') ? addr.slice(addr.indexOf(',') + 1).trim() : '';
+
+    const popupEl = document.createElement('div');
+    popupEl.innerHTML = `
+      <div class="vpc-header" style="padding-bottom:12px">
+        <div class="vpc-eyebrow" style="color:#f59e0b">Home base</div>
+        <div class="vpc-name" style="font-size:16px;white-space:normal;line-height:1.25">${venueName}</div>
+      </div>
+      ${restAddr ? `
+      <div class="vpc-divider"></div>
+      <div class="vpc-addr-row" style="padding-top:10px;align-items:flex-start">
+        <svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor" class="vpc-addr-icon" style="margin-top:1px;flex-shrink:0"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+        <span class="vpc-addr" style="white-space:normal;line-height:1.45">${restAddr}</span>
+      </div>` : ''}
+    `;
+
+    accomMarkerRef.current = new mgl.Marker({ element: wrapper, anchor: 'bottom-left' })
+      .setLngLat([accommodationMarker.lng, accommodationMarker.lat])
+      .setPopup(
+        new mgl.Popup({ offset: [22, -16], closeButton: false, className: 'venture-popup', maxWidth: '260px' })
+          .setDOMContent(popupEl)
+      )
+      .addTo(map);
+  }, [accommodationMarker, ready]); // eslint-disable-line
+
   /* ── Error state ──────────────────────────────────────────────────────────── */
   if (mapErr === 'no-token') {
     return (
@@ -595,6 +679,18 @@ export default function MapView({
       {/* ── Custom controls (top-left) ── */}
       {ready && (
         <div style={{ position: 'absolute', top: 10, left: 10, display: 'flex', flexDirection: 'column', gap: 6, zIndex: 10 }}>
+
+          {/* Home base recentre — only when accommodation is set */}
+          {accommodationMarker?.lat && accommodationMarker?.lng && (
+            <MapCtrlBtn
+              title={`Home base: ${accommodationMarker.address ?? 'accommodation'}`}
+              onClick={() => mapRef.current?.flyTo({ center: [accommodationMarker.lng, accommodationMarker.lat], zoom: 15, duration: 700 })}
+            >
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+                <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+              </svg>
+            </MapCtrlBtn>
+          )}
 
           {/* Fit-to-spots */}
           <MapCtrlBtn title="Fit all spots" onClick={fitToSpots}>⊞</MapCtrlBtn>

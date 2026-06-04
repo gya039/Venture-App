@@ -105,7 +105,7 @@ export default function SpotCard({
         style={{ cursor: onOpenDrawer ? 'pointer' : 'inherit' }}
       >
         <div className="sc-cat">
-          {catLabel}
+          {catLabel}{spot?.neighbourhood ? ` · ${spot.neighbourhood}` : ''}
         </div>
         <div className="sc-name">
           {spot?.name}
@@ -163,31 +163,51 @@ export default function SpotCard({
         )}
       </div>
 
-      {/* Action buttons */}
+      {/* Action buttons — labeled so Save vs "Add to day" are self-explanatory */}
       <div className="sc-acts">
-        {/* Star */}
+        {/* Save / Saved */}
         <button
           type="button"
-          className={'icbtn' + (isSaved ? ' on' : '')}
-          title={isSaved ? 'Remove star' : 'Star this spot'}
           onClick={handleStar}
+          aria-label={isSaved ? 'Remove save' : 'Save this spot'}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 3,
+            padding: '4px 7px', borderRadius: 6,
+            border: `1px solid ${isSaved ? 'var(--terracotta)' : 'var(--line)'}`,
+            background: isSaved ? 'color-mix(in oklch, var(--terracotta) 11%, transparent)' : 'transparent',
+            color: isSaved ? 'var(--terracotta)' : 'var(--muted)',
+            fontSize: '0.67rem', fontWeight: 600, cursor: 'pointer',
+            fontFamily: 'var(--mono)', letterSpacing: '0.02em',
+            whiteSpace: 'nowrap', transition: 'all 0.15s',
+          }}
         >
-          <svg viewBox="0 0 24 24" fill={isSaved ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+          <svg viewBox="0 0 24 24" width="10" height="10" fill={isSaved ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
             <path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 17l-5.4 2.6 1.2-6L3.3 9.4l6.1-.8z" />
           </svg>
+          {isSaved ? 'Saved' : 'Save'}
         </button>
 
-        {/* Add to day / open drawer */}
+        {/* Add to day */}
         {onAddToDay && (
           <button
             type="button"
-            className="icbtn"
-            title="Add to a day"
             onClick={(e) => { e.stopPropagation(); onAddToDay(spot); }}
+            aria-label="Add to a day"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 3,
+              padding: '4px 7px', borderRadius: 6,
+              border: '1px solid var(--line)',
+              background: 'transparent',
+              color: 'var(--muted)',
+              fontSize: '0.67rem', fontWeight: 600, cursor: 'pointer',
+              fontFamily: 'var(--mono)', letterSpacing: '0.02em',
+              whiteSpace: 'nowrap', transition: 'all 0.15s',
+            }}
           >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round">
+            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
               <path d="M12 5v14M5 12h14" />
             </svg>
+            Add to day
           </button>
         )}
       </div>
