@@ -236,11 +236,13 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
         Object.assign(el.style, {
           width: '26px', height: '26px', borderRadius: '50%',
           background: color, border: '2.5px solid #fff',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '10px', fontWeight: '700', color: '#000',
+          display: 'grid', placeItems: 'center',
+          fontSize: '10px', fontWeight: '800', color: '#000',
+          lineHeight: '1', textAlign: 'center',
+          boxSizing: 'border-box',
           boxShadow: `0 0 8px ${color}60, 0 2px 6px rgba(0,0,0,0.4)`,
           cursor: 'pointer', userSelect: 'none', zIndex: '5',
-          fontFamily: 'sans-serif',
+          fontFamily: 'ui-monospace, monospace',
         });
         el.textContent = i + 1;
 
