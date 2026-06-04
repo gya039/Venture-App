@@ -9,7 +9,7 @@ import { track } from '@/lib/analytics';
 import { useDestination } from '@/hooks/useDestination';
 import { useDayPlanner } from '@/hooks/useDayPlanner';
 import { useSavedSpots } from '@/hooks/useSavedSpots';
-import { runResearch, runDeepResearch, runEventsResearch } from '@/lib/functions';
+import { runResearch, runDeepResearch, runEventsResearch, runPopularResearch } from '@/lib/functions';
 import { isEventsCity } from '@/lib/db';
 import SpotCard from '@/components/SpotCard';
 import SpotDrawer from '@/components/SpotDrawer';
@@ -206,6 +206,12 @@ export default function TripDetailPage() {
   const [reviewAggregates, setReviewAggregates] = useState({});
   // User's submitted ratings { spotId: 1-5 }
   const [userRatings, setUserRatings] = useState({});
+
+  // Popular spots (Phase 4 — collapsible tourist must-sees)
+  const [popularSpots,   setPopularSpots]   = useState([]);
+  const [popularOpen,    setPopularOpen]    = useState(false);
+  const [popularLoading, setPopularLoading] = useState(false);
+  const [popularError,   setPopularError]   = useState(null);
 
   // Research sub-tab: 'spots' | 'discover'
   const [researchSubTab, setResearchSubTab] = useState('spots');
@@ -519,6 +525,9 @@ export default function TripDetailPage() {
     setDeepStreaming([]);
     setDeepError(null);
     setCityEvents([]);
+    setPopularSpots([]);
+    setPopularOpen(false);
+    setPopularError(null);
   }, [selectedDest?.id]);
 
   /* ── Derived ────────────────────────────────────────────────────────────── */
@@ -1238,6 +1247,101 @@ export default function TripDetailPage() {
                           <button type="button" onClick={() => { setFilterInterests(new Set()); setMinScoreFilter(0); setSearchQuery(''); setStarredOnly(false); }} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', background: 'var(--card)', border: '1px solid var(--line-strong)', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
                             Clear filters
                           </button>
+                        </div>
+                      )}
+
+                      {/* ── Popular / Must-See spots collapsible (Phase 4) ── */}
+                      {!isResearching && spots.length > 0 && (
+                        <div style={{ margin: '8px 0 4px', borderTop: '1px solid var(--line)' }}>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const next = !popularOpen;
+                              setPopularOpen(next);
+                              // Load on first open
+                              if (next && popularSpots.length === 0 && !popularLoading && selectedDest?.city) {
+                                setPopularLoading(true);
+                                setPopularError(null);
+                                try {
+                                  await runPopularResearch(selectedDest.city, false, {
+                                    onSpot:    (s) => setPopularSpots((prev) => [...prev, s]),
+                                    onStatus:  () => {},
+                                    onSummary: () => {},
+                                  });
+                                } catch (err) {
+                                  setPopularError(err.message);
+                                } finally {
+                                  setPopularLoading(false);
+                                }
+                              }
+                            }}
+                            style={{
+                              width: '100%', padding: '11px 14px',
+                              background: 'none', border: 'none',
+                              display: 'flex', alignItems: 'center', gap: 8,
+                              cursor: 'pointer', textAlign: 'left',
+                            }}
+                          >
+                            <span style={{ fontSize: '0.6rem', fontFamily: 'var(--mono)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--t5, #f59e0b)' }}>
+                              ★ Popular &amp; Must-See
+                            </span>
+                            <span style={{ fontSize: '0.6rem', color: 'var(--muted)', fontFamily: 'var(--mono)' }}>
+                              — the famous spots, clearly labelled
+                            </span>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--muted)" strokeWidth={2.5} strokeLinecap="round"
+                              style={{ marginLeft: 'auto', flexShrink: 0, transform: popularOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.18s' }}>
+                              <path d="M6 9l6 6 6-6"/>
+                            </svg>
+                          </button>
+
+                          {popularOpen && (
+                            <div>
+                              {/* Loading state */}
+                              {popularLoading && popularSpots.length === 0 && (
+                                <div style={{ padding: '16px 14px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <div style={{ width: 14, height: 14, border: '2px solid var(--line)', borderTopColor: 'var(--t5)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>Finding top attractions…</span>
+                                </div>
+                              )}
+                              {/* Error */}
+                              {popularError && !popularLoading && (
+                                <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                  <p style={{ fontSize: '0.75rem', color: 'var(--error)' }}>{popularError}</p>
+                                  <button type="button" onClick={() => { setPopularError(null); setPopularSpots([]); setPopularOpen(false); setTimeout(() => setPopularOpen(true), 50); }}
+                                    style={{ background: 'none', border: '1px solid color-mix(in oklch, var(--error) 30%, transparent)', borderRadius: 6, color: 'var(--error)', fontSize: '0.7rem', padding: '3px 8px', cursor: 'pointer', flexShrink: 0 }}>
+                                    Retry
+                                  </button>
+                                </div>
+                              )}
+                              {/* Intro banner */}
+                              {popularSpots.length > 0 && (
+                                <div style={{ margin: '0 14px 8px', padding: '7px 10px', borderRadius: 8, background: 'color-mix(in oklch, var(--t5) 8%, var(--card))', border: '1px solid color-mix(in oklch, var(--t5) 22%, transparent)', fontSize: '0.68rem', color: 'var(--muted)', lineHeight: 1.5 }}>
+                                  These are the <strong style={{ color: 'var(--ink)' }}>iconic, well-known spots</strong> — included so you have the full picture. Not hidden, but worth knowing.
+                                </div>
+                              )}
+                              {/* Popular spot cards — reuse SpotCard */}
+                              {popularSpots.map((spot) => (
+                                <SpotCard
+                                  key={spot.id ?? spot.name}
+                                  spot={spot}
+                                  active={selectedSpotId === spot.id}
+                                  onSelect={() => setSelectedSpotId(selectedSpotId === spot.id ? null : spot.id)}
+                                  saved={savedIds.has(spot.id)}
+                                  onToggleSave={toggleSave}
+                                  onOpenDrawer={setDrawerSpot}
+                                  onAddToDay={isPastTrip ? null : ((s) => { setQuickAddSpot(s); setQuickAddDay(days[0]?.id ?? ''); setQuickAddSlot('morning'); })}
+                                  isPastTrip={isPastTrip}
+                                />
+                              ))}
+                              {/* Still loading but some spots already arrived */}
+                              {popularLoading && popularSpots.length > 0 && (
+                                <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                                  <div style={{ width: 12, height: 12, border: '2px solid var(--line)', borderTopColor: 'var(--t5)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>Loading more…</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

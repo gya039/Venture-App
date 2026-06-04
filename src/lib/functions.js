@@ -2,7 +2,7 @@
 // Research helper — calls the Next.js /api/research SSE route,
 // streams spots one-by-one via onSpot callback, caches to Firestore on completion.
 
-import { cacheSpots, markResearchDone, getCachedSpots, getCachedDeepSpots, cacheDeepSpots, getCityEvents, cacheCityEvents } from './db';
+import { cacheSpots, markResearchDone, getCachedSpots, getCachedDeepSpots, cacheDeepSpots, getCityEvents, cacheCityEvents, getCachedPopularSpots, cachePopularSpots } from './db';
 
 /**
  * Run AI research for a city with streaming callbacks.
@@ -184,6 +184,74 @@ export async function runDeepResearch(
   // 4. Cache deep spots separately
   await cacheDeepSpots(city, category, allSpots).catch((err) =>
     console.error('[runDeepResearch] cache error:', err)
+  );
+
+  return { spots: allSpots, cached: false };
+}
+
+/**
+ * Popular spots research — tourist must-sees, clearly separate from hidden gems.
+ * Checks the Firestore popular cache first; hits AI only on a miss.
+ */
+export async function runPopularResearch(
+  city,
+  force = false,
+  { onSpot, onStatus, onSummary } = {},
+) {
+  if (!force) {
+    const cached = await getCachedPopularSpots(city);
+    if (cached.length > 0) {
+      cached.forEach((s) => onSpot?.(s));
+      onSummary?.({ geocoded: cached.length, city, mode: 'popular', fromCache: true });
+      return { spots: cached, cached: true };
+    }
+  }
+
+  onStatus?.(`Finding top attractions in ${city}…`);
+
+  const res = await fetch('/api/research', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ city, mode: 'popular' }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error ?? `Popular research failed (${res.status})`);
+  }
+
+  const reader   = res.body.getReader();
+  const decoder  = new TextDecoder();
+  const allSpots = [];
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop() ?? '';
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      let event = 'message', data = '';
+      for (const line of part.split('\n')) {
+        if (line.startsWith('event: '))     event = line.slice(7).trim();
+        else if (line.startsWith('data: ')) data  = line.slice(6).trim();
+      }
+      if (!data) continue;
+      let payload;
+      try { payload = JSON.parse(data); } catch { continue; }
+      if      (event === 'status')  onStatus?.(payload.message);
+      else if (event === 'spot')    { allSpots.push(payload); onSpot?.(payload); }
+      else if (event === 'summary') onSummary?.(payload);
+      else if (event === 'error')   throw new Error(payload.message ?? 'Popular research failed');
+    }
+  }
+
+  if (!allSpots.length) throw new Error('No popular spots found. Please try again.');
+
+  await cachePopularSpots(city, allSpots).catch((err) =>
+    console.error('[runPopularResearch] cache error:', err)
   );
 
   return { spots: allSpots, cached: false };

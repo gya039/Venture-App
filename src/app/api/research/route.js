@@ -117,6 +117,28 @@ Confidence scoring:
 
 IMPORTANT: Return complete, valid JSON. Close the array cleanly if approaching output limit.`;
 
+const buildPopularPrompt = (city) => `You are a travel researcher producing a list of the most iconic and essential tourist attractions in ${city}.
+
+These are the MUST-SEE, well-known places — the famous landmarks, top museums, celebrated restaurants, and unmissable experiences that every visitor should know about. These are NOT hidden gems.
+
+Include:
+- World-famous or nationally-famous landmarks and monuments
+- Top-rated museums, galleries, and cultural institutions
+- Iconic viewpoints, parks, and public spaces that define the city
+- The restaurants, cafes, and food spots that have become famous
+- Shopping streets, markets, and areas tourists love
+- Celebrated hotels, rooftop bars, or entertainment venues
+- Anything that appears on "must-see in ${city}" lists
+
+Rules:
+- Score hiddennessScore HONESTLY: 1–3 for global icons, 4–5 for well-known local favourites
+- Set editorialConfidence HIGH (0.85–1.0) only for places you're certain are still operating, excellent, and genuinely worth visiting
+- Include practical info: opening hours, prices, address
+- Return 15–30 spots — the essential highlights, not an exhaustive list
+- Every spot MUST be real and currently operating (as of your knowledge cutoff)
+
+${JSON_SCHEMA}`.trim();
+
 const buildEventsPrompt = (city) => `You are a local events researcher for ${city}.
 
 Research RECURRING events in ${city} — events that happen weekly or monthly on a fixed schedule.
@@ -764,6 +786,51 @@ async function geocodeSpot(spot, city, cityCenter, token) {
 
 export async function POST(request) {
   const { city, interests = [], mode = 'curated', category = '' } = await request.json();
+  // ── Popular mode: tourist must-sees, non-streaming ──────────────────────────
+  if (mode === 'popular') {
+    const encoder = new TextEncoder();
+    const stream  = new ReadableStream({
+      async start(controller) {
+        const send = (event, data) => {
+          try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
+          catch (e) { if (e?.code !== 'ERR_INVALID_STATE') throw e; }
+        };
+        try {
+          send('status', { message: `Finding top attractions in ${city}…` });
+          const raw    = await callOpenAI(buildPopularPrompt(city));
+          const clean  = raw.map(({ lat, lng, latitude, longitude, ...rest }) => ({
+            ...rest, category: normaliseCategory(rest.category), isPopular: true,
+          }));
+          send('total', { count: clean.length });
+          const token      = process.env.MAPBOX_SERVER_TOKEN ?? process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+          const cityCenter = token ? await getCityCenter(city, token) : null;
+          let sent = 0, skipped = 0;
+          const queue   = clean.slice();
+          const workers = Array.from({ length: Math.min(5, clean.length) }, async () => {
+            while (queue.length > 0) {
+              const spot = queue.shift();
+              if (!spot) continue;
+              const geocoded = (token && cityCenter)
+                ? await geocodeSpot(spot, city, cityCenter, token)
+                : { ...spot, coordsMissing: true };
+              if (geocoded.coordsMissing) { skipped++; }
+              else { send('spot', geocoded); sent++; }
+            }
+          });
+          await Promise.all(workers);
+          send('summary', { generated: raw.length, geocoded: sent, dropped: skipped, city, mode: 'popular' });
+          send('done', { total: sent });
+        } catch (err) {
+          send('error', { message: err.message ?? 'Popular research failed' });
+        } finally {
+          try { controller.close(); } catch {}
+        }
+      },
+    });
+    return new Response(stream, {
+      headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' },
+    });
+  }
   if (!city) return new Response('{"error":"city is required"}', { status: 400 });
 
   const encoder = new TextEncoder();

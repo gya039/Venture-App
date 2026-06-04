@@ -1029,6 +1029,12 @@ export default function DaysBuilder({
   /* ── Plan view toggle ('list' | 'map') ──────────────────────────────────── */
   const [planView, setPlanView] = useState('list');
 
+  /* ── Generate itinerary modal ───────────────────────────────────────────── */
+  const [genModalOpen,      setGenModalOpen]      = useState(false);
+  const [genSelectedDayIds, setGenSelectedDayIds] = useState(new Set());
+  const [generating,        setGenerating]        = useState(false);
+  const [genError,          setGenError]          = useState(null);
+
   /* ── Mobile panel toggle ('picker' | 'planner') ─────────────────────────── */
   const [mobilePanel, setMobilePanel] = useState('planner');
 
@@ -1666,6 +1672,28 @@ export default function DaysBuilder({
               )}
             </div>
 
+            {/* ✨ Generate itinerary */}
+            <button
+              type="button"
+              onClick={() => {
+                setGenSelectedDayIds(new Set(days.map((d) => d.id)));
+                setGenError(null);
+                setGenModalOpen(true);
+              }}
+              style={{
+                padding: '6px 12px', borderRadius: 8,
+                background: 'linear-gradient(135deg, color-mix(in oklch, var(--terracotta) 80%, #8b5cf6) 0%, #8b5cf6 100%)',
+                border: 'none', color: '#fff',
+                fontSize: '0.75rem', fontWeight: 700,
+                cursor: 'pointer', transition: 'opacity 0.15s',
+                display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+              }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
+            >
+              ✨ Generate
+            </button>
+
             {/* PDF export */}
             <button
               type="button"
@@ -1903,6 +1931,217 @@ export default function DaysBuilder({
         </>
       );
     })()}
+
+    {/* ── Generate Itinerary Modal ─────────────────────────────────────── */}
+    {genModalOpen && (
+      <>
+        <div
+          onClick={() => { if (!generating) setGenModalOpen(false); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+        />
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 301,
+            background: 'var(--card)', borderRadius: '20px 20px 0 0',
+            boxShadow: '0 -8px 40px rgba(0,0,0,0.35)',
+            animation: 'slideUp 0.22s ease',
+            maxHeight: '85dvh', display: 'flex', flexDirection: 'column',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+          }}
+        >
+          {/* Header */}
+          <div style={{ padding: '18px 18px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
+              <div>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--ink)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span>✨</span> Generate Itinerary
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--muted)', lineHeight: 1.55, maxWidth: 320 }}>
+                  AI picks the best spots for each day — checking opening hours and clustering nearby places. Starred spots get priority.
+                </p>
+              </div>
+              {!generating && (
+                <button type="button" onClick={() => setGenModalOpen(false)}
+                  style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, flexShrink: 0, padding: '2px 4px' }}>
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Day picker */}
+          <div style={{ flex: 1, overflowY: 'auto', padding: '14px 18px' }}>
+            <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 12 }}>
+              Which days should I plan?
+            </div>
+
+            {/* Select / deselect all */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+              <button type="button"
+                onClick={() => setGenSelectedDayIds(new Set(days.map((d) => d.id)))}
+                style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: '0.73rem', fontWeight: 600, cursor: 'pointer' }}>
+                All days
+              </button>
+              <button type="button"
+                onClick={() => setGenSelectedDayIds(new Set())}
+                style={{ padding: '5px 12px', borderRadius: 8, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: '0.73rem', fontWeight: 600, cursor: 'pointer' }}>
+                None
+              </button>
+            </div>
+
+            {days.map((day, di) => {
+              const isSelected = genSelectedDayIds.has(day.id);
+              const dayColor   = DAY_COLORS[di % DAY_COLORS.length];
+              const hasSpots   = Object.values(allSlots_[day.id] ?? {}).some((arr) => arr.length > 0);
+              return (
+                <button
+                  key={day.id}
+                  type="button"
+                  onClick={() => {
+                    const next = new Set(genSelectedDayIds);
+                    if (next.has(day.id)) next.delete(day.id);
+                    else next.add(day.id);
+                    setGenSelectedDayIds(next);
+                  }}
+                  style={{
+                    width: '100%', marginBottom: 8, padding: '12px 14px',
+                    borderRadius: 10, border: `1.5px solid ${isSelected ? dayColor : 'var(--border)'}`,
+                    borderLeft: `4px solid ${dayColor}`,
+                    background: isSelected ? `color-mix(in oklch, ${dayColor} 8%, var(--card))` : 'var(--card)',
+                    cursor: 'pointer', textAlign: 'left', transition: 'all 0.12s',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                  }}
+                >
+                  <div style={{
+                    width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                    border: `2px solid ${isSelected ? dayColor : 'var(--muted)'}`,
+                    background: isSelected ? dayColor : 'transparent',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    transition: 'all 0.12s',
+                  }}>
+                    {isSelected && (
+                      <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="#000" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M20 6L9 17l-5-5"/>
+                      </svg>
+                    )}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600, color: isSelected ? 'var(--ink)' : 'var(--ink-soft)' }}>
+                      Day {day.dayNumber}
+                      {day.planDate && (
+                        <span style={{ fontWeight: 400, fontSize: '0.76rem', color: 'var(--muted)', marginLeft: 7 }}>
+                          · {fmtDayLabel(day.planDate)}
+                        </span>
+                      )}
+                    </div>
+                    {hasSpots && (
+                      <div style={{ fontSize: '0.68rem', color: 'var(--muted)', marginTop: 2 }}>
+                        Already has spots · will be added to
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+
+            {/* Info note */}
+            <div style={{ marginTop: 8, padding: '10px 12px', borderRadius: 8, background: 'color-mix(in oklch, var(--ink) 4%, transparent)', border: '1px solid var(--line)' }}>
+              <p style={{ fontSize: '0.7rem', color: 'var(--muted)', lineHeight: 1.6 }}>
+                <strong style={{ color: 'var(--ink)' }}>Note:</strong> Generated spots are added alongside any existing ones. Places that are closed on that day are automatically skipped. You can always remove individual spots after.
+              </p>
+            </div>
+          </div>
+
+          {/* Error */}
+          {genError && (
+            <div style={{ padding: '10px 18px', background: 'color-mix(in oklch, var(--error) 7%, transparent)', borderTop: '1px solid color-mix(in oklch, var(--error) 20%, transparent)', flexShrink: 0 }}>
+              <p style={{ fontSize: '0.78rem', color: 'var(--error)', lineHeight: 1.5 }}>{genError}</p>
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{ flexShrink: 0, padding: '12px 18px', borderTop: '1px solid var(--border)' }}>
+            <button
+              type="button"
+              disabled={generating || genSelectedDayIds.size === 0 || spots.length === 0}
+              onClick={async () => {
+                if (genSelectedDayIds.size === 0 || spots.length === 0 || generating) return;
+                setGenerating(true);
+                setGenError(null);
+                try {
+                  const selectedDays = days.filter((d) => genSelectedDayIds.has(d.id));
+                  const res = await fetch('/api/generate-itinerary', {
+                    method:  'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      city,
+                      days: selectedDays,
+                      spots,
+                      accommodation: trip?.accommodation ?? null,
+                      savedSpotIds: [...Object.values(allSlots_).flatMap(
+                        (d) => Object.values(d).flatMap((arr) => arr.map((s) => s.id))
+                      )], // treat already-placed spots as "known interesting"
+                    }),
+                  });
+                  if (!res.ok) {
+                    const body = await res.json().catch(() => ({}));
+                    throw new Error(body.error ?? `Generation failed (${res.status})`);
+                  }
+                  const { assignments } = await res.json();
+                  if (!assignments?.length) throw new Error('AI returned no assignments. Try with more spots saved.');
+
+                  // Apply assignments
+                  let applied = 0;
+                  for (const a of assignments) {
+                    const day = days.find((d) => d.id === a.dayId);
+                    if (!day) continue;
+                    try {
+                      await addSpotToDayPlan(a.dayId, a.spotId, city, a.slot);
+                      applied++;
+                    } catch { /* spot may already exist in plan */ }
+                  }
+                  onRefetch();
+                  setGenModalOpen(false);
+                  toast?.success?.(`✨ ${applied} spots added across ${genSelectedDayIds.size} day${genSelectedDayIds.size !== 1 ? 's' : ''}!`);
+                } catch (err) {
+                  console.error('[generate-itinerary]', err);
+                  setGenError(err.message ?? 'Generation failed. Please try again.');
+                } finally {
+                  setGenerating(false);
+                }
+              }}
+              style={{
+                width: '100%', padding: '14px',
+                background: generating || genSelectedDayIds.size === 0
+                  ? 'var(--line)'
+                  : 'linear-gradient(135deg, color-mix(in oklch, var(--terracotta) 80%, #8b5cf6) 0%, #8b5cf6 100%)',
+                border: 'none', color: '#fff',
+                borderRadius: 13,
+                fontSize: '0.92rem', fontWeight: 700,
+                cursor: generating || genSelectedDayIds.size === 0 ? 'not-allowed' : 'pointer',
+                opacity: spots.length === 0 ? 0.4 : 1,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                transition: 'opacity 0.15s',
+              }}
+            >
+              {generating ? (
+                <>
+                  <div style={{ width: 16, height: 16, border: '2px solid rgba(255,255,255,0.4)', borderTopColor: '#fff', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+                  Generating…
+                </>
+              ) : spots.length === 0 ? (
+                'Research spots first'
+              ) : genSelectedDayIds.size === 0 ? (
+                'Select at least one day'
+              ) : (
+                `✨ Generate itinerary for ${genSelectedDayIds.size} day${genSelectedDayIds.size !== 1 ? 's' : ''}`
+              )}
+            </button>
+          </div>
+        </div>
+      </>
+    )}
 
     {/* ── Add-to-plan bottom sheet ──────────────────────────────────────── */}
     {sheetSpot && (() => {

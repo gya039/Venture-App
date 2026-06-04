@@ -567,6 +567,32 @@ export async function cacheDeepSpots(city, category, spots) {
 }
 
 // ---------------------------------------------------------------------------
+// Popular Spots — cityPopularSpots/{city}/spots/{id}
+// Stored separately from hidden gems so we never mix the two lists.
+// ---------------------------------------------------------------------------
+
+export async function getCachedPopularSpots(city) {
+  const snap = await getDocs(collection(db, 'cityPopularSpots', city.toLowerCase(), 'spots'));
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+export async function cachePopularSpots(city, spots) {
+  const cid    = city.toLowerCase();
+  const colRef = collection(db, 'cityPopularSpots', cid, 'spots');
+  const BATCH  = 500;
+  for (let i = 0; i < spots.length; i += BATCH) {
+    const batch = writeBatch(db);
+    spots.slice(i, i + BATCH).forEach((spot) => {
+      batch.set(doc(colRef), { ...spot, city, cachedAt: new Date().toISOString() });
+    });
+    if (i === 0) {
+      batch.set(doc(db, 'cityPopularSpots', cid), { city, count: spots.length, cachedAt: new Date().toISOString() });
+    }
+    await batch.commit();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // City Events (recurring events, Glasgow-gated) — cityEvents/{city}/events/{id}
 // ---------------------------------------------------------------------------
 
