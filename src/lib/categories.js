@@ -17,8 +17,10 @@
 export const CANONICAL_CATEGORIES = [
   'Art', 'Architecture', 'Bar', 'Beach', 'Café',
   'Food', 'History', 'Market', 'Museum', 'Music',
-  'Nature', 'Neighbourhood', 'Nightlife', 'Offbeat', 'Park',
-  'Shopping', 'Spa', 'Spiritual', 'Other',
+  'Nature', 'Nightlife', 'Offbeat', 'Park',
+  'Shopping', 'Spa', 'Spiritual',
+  // 'Neighbourhood' removed — AI prompt now bans it. 'Other' kept for legacy data.
+  'Other',
 ];
 
 /**
@@ -57,7 +59,7 @@ const RAW_TO_CANONICAL = {
   'museum / history':          'Museum',
   'market / street food':      'Market',
   'architecture / landmark':   'Architecture',
-  'neighbourhood / district':  'Neighbourhood',
+  'neighbourhood / district':  'Offbeat',
   'park / green space':        'Park',
   'gallery / art':             'Art',
   'spiritual / ritual':        'Spiritual',
@@ -81,7 +83,7 @@ const RAW_TO_CANONICAL = {
   'museum':        'Museum',
   'music':         'Music',
   'nature':        'Nature',
-  'neighbourhood': 'Neighbourhood',
+  'neighbourhood': 'Offbeat',
   'nightlife':     'Nightlife',
   'offbeat':       'Offbeat',
   'park':          'Park',
@@ -91,10 +93,71 @@ const RAW_TO_CANONICAL = {
   'other':         'Other',
 
   // ── AI prompt variants ────────────────────────────────────────────────
-  'landmark':        'Architecture',
-  'monument':        'Architecture',
-  'historic site':   'History',
-  'historic':        'History',
+  'landmark':           'Architecture',
+  'monument':           'Architecture',
+  'historic site':      'History',
+  'historic':           'History',
+  'historic building':  'History',
+  'historical':         'History',
+  'heritage':           'History',
+  'ruins':              'History',
+  'ruin':               'History',
+  'memorial':           'History',
+  'cemetery':           'History',
+  'graveyard':          'History',
+  'palace':             'Architecture',
+  'castle':             'Architecture',
+  'tower':              'Architecture',
+  'bridge':             'Architecture',
+  'rooftop':            'Architecture',
+  'viewpoint':          'Nature',
+  'vista':              'Nature',
+  'lookout':            'Nature',
+  'observation':        'Nature',
+  'hiking':             'Nature',
+  'trail':              'Nature',
+  'waterfall':          'Nature',
+  'lake':               'Nature',
+  'river':              'Nature',
+  'canal':              'Nature',
+  'botanical':          'Park',
+  'botanic':            'Park',
+  'reserve':            'Park',
+  'forest':             'Park',
+
+  // ── Art & street culture ──────────────────────────────────────────────
+  'street art':         'Art',
+  'mural':              'Art',
+  'sculpture':          'Art',
+  'installation':       'Art',
+  'exhibition':         'Art',
+  'theater':            'Music',
+  'theatre':            'Music',
+  'opera':              'Music',
+  'concert':            'Music',
+  'venue':              'Music',
+  'comedy':             'Offbeat',
+  'cinema':             'Offbeat',
+  'film':               'Offbeat',
+  'bookshop':           'Shopping',
+  'bookstore':          'Shopping',
+  'library':            'History',
+  'skatepark':          'Offbeat',
+  'arcade':             'Offbeat',
+  'escape room':        'Offbeat',
+  'curiosity':          'Offbeat',
+  'quirky':             'Offbeat',
+
+  // ── Wellness ──────────────────────────────────────────────────────────
+  'baths':              'Spa',
+  'bath':               'Spa',
+  'thermal':            'Spa',
+  'hammam':             'Spa',
+  'sauna':              'Spa',
+  'hot spring':         'Spa',
+  'onsen':              'Spa',
+  'swimming':           'Spa',
+  'pool':               'Spa',
 
   // ── English synonyms / plurals ────────────────────────────────────────
   'museums':         'Museum',
@@ -105,29 +168,51 @@ const RAW_TO_CANONICAL = {
   'garden':          'Park',
   'gardens':         'Park',
   'green space':     'Park',
+  'outdoor space':   'Park',
   'bars':            'Bar',
   'pub':             'Bar',
   'pubs':            'Bar',
+  'wine bar':        'Bar',
+  'cocktail bar':    'Bar',
+  'taproom':         'Bar',
+  'brewery':         'Bar',
+  'distillery':      'Bar',
   'cafés':           'Café',
   'cafes':           'Café',
   'coffee':          'Café',
   'coffee shop':     'Café',
+  'bakery':          'Café',
+  'patisserie':      'Café',
+  'tea house':       'Café',
   'restaurant':      'Food',
   'restaurants':     'Food',
   'dining':          'Food',
+  'eatery':          'Food',
+  'bistro':          'Food',
+  'trattoria':       'Food',
+  'taverna':         'Food',
+  'food hall':       'Food',
+  'food stall':      'Market',
   'markets':         'Market',
   'street food':     'Market',
+  'flea market':     'Market',
+  'antique':         'Market',
   'shop':            'Shopping',
   'shops':           'Shopping',
-  'neighborhood':    'Neighbourhood',
-  'neighborhoods':   'Neighbourhood',
-  'neighbourhoods':  'Neighbourhood',
-  'district':        'Neighbourhood',
+  'boutique':        'Shopping',
+  'neighborhood':    'Offbeat',
+  'neighborhoods':   'Offbeat',
+  'neighbourhoods':  'Offbeat',
+  'district':        'Offbeat',
   'temple':          'Spiritual',
   'church':          'Spiritual',
   'mosque':          'Spiritual',
   'cathedral':       'Spiritual',
   'shrine':          'Spiritual',
+  'synagogue':       'Spiritual',
+  'pagoda':          'Spiritual',
+  'monastery':       'Spiritual',
+  'chapel':          'Spiritual',
   'unusual':         'Offbeat',
   'underground':     'Offbeat',
   'weird':           'Offbeat',
@@ -138,6 +223,9 @@ const RAW_TO_CANONICAL = {
   'clubs':           'Nightlife',
   'nightclub':       'Nightlife',
   'nightclubs':      'Nightlife',
+  'beach bar':       'Beach',
+  'coast':           'Beach',
+  'seaside':         'Beach',
 };
 
 // ---------------------------------------------------------------------------
@@ -156,7 +244,21 @@ export function normaliseCategory(raw) {
     .trim()
     .replace(/_/g, ' ')
     .replace(/\s*\/\s*/g, ' / ');
-  return RAW_TO_CANONICAL[key] ?? 'Other';
+
+  // 1. Exact map lookup
+  if (RAW_TO_CANONICAL[key]) return RAW_TO_CANONICAL[key];
+
+  // 2. Substring fallback — check if any known keyword appears inside the raw string
+  //    (catches "Historic Building", "Rooftop Bar", "Botanical Garden", etc.)
+  for (const [mapKey, canonical] of Object.entries(RAW_TO_CANONICAL)) {
+    if (mapKey.length >= 4 && key.includes(mapKey)) return canonical;
+  }
+
+  // 3. Canonical pass-through — AI returned a value that IS already canonical
+  const titleCased = String(raw).trim();
+  if (CANONICAL_CATEGORIES.includes(titleCased)) return titleCased;
+
+  return 'Other';
 }
 
 /**

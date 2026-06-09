@@ -1,9 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useState, useEffect, Suspense } from 'react';
+import { useParams, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
-import { getTripPublic, getDayPlansPublic, getDayPlanSpotsPublic, getCachedSpots } from '@/lib/db';
+import { getTripPublic, getTripByToken, getDayPlansPublic, getDayPlanSpotsPublic, getCachedSpots } from '@/lib/db';
 import { formatPrice } from '@/lib/pricing';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import ScoreMedallion from '@/components/ScoreMedallion';
@@ -173,9 +173,12 @@ function DestSection({ dest }) {
   );
 }
 
-/* ── Main ────────────────────────────────────────────────────── */
-export default function SharePage() {
-  const { id: tripId } = useParams();
+/* ── Main (inner — needs useSearchParams, so wrapped in Suspense below) ── */
+function SharePageInner() {
+  const { id: tripId }  = useParams();
+  const searchParams    = useSearchParams();
+  const token           = searchParams.get('token');
+
   const [trip,    setTrip]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
@@ -183,11 +186,14 @@ export default function SharePage() {
 
   useEffect(() => {
     if (!tripId) return;
-    getTripPublic(tripId)
+    const fetcher = token
+      ? getTripByToken(tripId, token)   // private link
+      : getTripPublic(tripId);           // public link
+    fetcher
       .then((t) => { setTrip(t); if (!t) setError('not_found'); })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [tripId]); // eslint-disable-line
+  }, [tripId, token]); // eslint-disable-line
 
   function copyLink() {
     navigator.clipboard.writeText(window.location.href).then(() => {
@@ -207,7 +213,9 @@ export default function SharePage() {
       <span style={{ fontSize: '3rem' }}>🗺️</span>
       <p style={{ fontFamily: 'var(--serif)', fontWeight: 500, fontSize: 22, color: 'var(--ink)' }}>Itinerary not found</p>
       <p style={{ fontSize: 14, color: 'var(--muted)', maxWidth: 300, lineHeight: 1.6 }}>
-        This share link may have expired, or the trip hasn't been made public yet.
+        {token
+          ? 'This private link may have been revoked, or the URL is incomplete.'
+          : "This share link may have expired, or the trip hasn't been made public yet."}
       </p>
       <Link href="/" className="btn btn-primary" style={{ textDecoration: 'none', flex: 'none' }}>Plan your own trip →</Link>
     </div>
@@ -234,7 +242,7 @@ export default function SharePage() {
         <Link href="/" className="wordmark">
           Venture<sup>N48°51′</sup>
         </Link>
-        <span className="ro-badge">Read only</span>
+        <span className="ro-badge">{token ? '🔒 Private · View only' : 'Read only'}</span>
         <div style={{ flex: 1 }} />
         <Link href="/auth" className="btn btn-primary btn-sm" style={{ textDecoration: 'none' }}>
           Plan your own trip →
@@ -247,7 +255,7 @@ export default function SharePage() {
           <div className="grid" />
         </div>
         <div className="sh-content">
-          <div className="sh-eyebrow">Venture · Public itinerary</div>
+          <div className="sh-eyebrow">{token ? 'Venture · Private itinerary' : 'Venture · Public itinerary'}</div>
           <h1>
             {title}
             {!trip.isMultiCity && firstDest?.countryCode && (
@@ -316,5 +324,18 @@ export default function SharePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── Export: wrapped in Suspense so useSearchParams works ─────── */
+export default function SharePage() {
+  return (
+    <Suspense fallback={
+      <div style={{ minHeight: '100vh', background: 'var(--paper)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ width: 28, height: 28, borderRadius: '50%', border: '2px solid var(--line)', borderTopColor: 'var(--terracotta)', animation: 'spin 0.8s linear infinite' }} />
+      </div>
+    }>
+      <SharePageInner />
+    </Suspense>
   );
 }

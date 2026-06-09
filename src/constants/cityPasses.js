@@ -178,6 +178,7 @@ export const CITY_PASSES = {
   Edinburgh: {
     name: 'Royal Edinburgh Ticket',
     emoji: '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
+    currency: '£',
     tiers: [
       { days: 3, price: 43, label: '3 days' },
     ],

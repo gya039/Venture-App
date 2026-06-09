@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/useAuth';
 import { useTrips } from '@/hooks/useTrips';
 import { useSavedSpots } from '@/hooks/useSavedSpots';
 import { getUser, getDayPlans, getPublicTripsLike, deleteTrip } from '@/lib/db';
+import { useSharedTrips } from '@/hooks/useSharedTrips';
 import TripCard from '@/components/TripCard';
 import TopNav from '@/components/TopNav';
 import InstallBanner from '@/components/InstallBanner';
@@ -127,6 +128,21 @@ function TripHero({ trip, onDelete }) {
       {/* ── Left panel ── */}
       <div className="hero-left">
         <div className="hero-eyebrow">Next departure</div>
+
+        {/* TODAY banner — shown in the text panel on all screen sizes */}
+        {days === 0 && (
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7,
+            padding: '5px 14px', borderRadius: 20, marginBottom: 10, marginTop: 6,
+            background: 'color-mix(in oklch, var(--terracotta) 12%, transparent)',
+            border: '1px solid color-mix(in oklch, var(--terracotta) 30%, transparent)',
+          }}>
+            <span style={{ fontSize: '1rem' }}>🎉</span>
+            <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--terracotta-deep)', fontFamily: 'var(--mono)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              Happening today!
+            </span>
+          </div>
+        )}
 
         <div className="hero-city">
           {displayCity}
@@ -595,10 +611,12 @@ function GuestHome() {
 
 /* ── Logged-in Dashboard ──────────────────────────────────────── */
 function Dashboard({ user }) {
-  const { trips, loading } = useTrips();
-  const { savedIds }       = useSavedSpots(user?.uid);
+  const { trips, loading }         = useTrips();
+  const { trips: sharedTrips }     = useSharedTrips();
+  const { savedIds }               = useSavedSpots(user?.uid);
   const tripModal          = useTripModal();
-  const firstName          = user?.displayName?.split(' ')[0] ?? user?.email?.split('@')[0] ?? 'there';
+  const rawName            = user?.email?.split('@')[0]?.replace(/[._\-]+/g, ' ')?.replace(/\d+/g, '')?.trim()?.split(' ')[0] ?? 'there';
+  const firstName          = user?.displayName?.split(' ')[0] ?? (rawName.charAt(0).toUpperCase() + rawName.slice(1).toLowerCase());
 
   const [showOnboarding, setShowOnboarding] = useState(false);
   useEffect(() => {
@@ -711,6 +729,23 @@ function Dashboard({ user }) {
             {past.length > 0 && (
               <section className="section">
                 <PastSection past={past} onDelete={(id) => deleteTrip(id)} />
+              </section>
+            )}
+
+            {/* Shared with me */}
+            {sharedTrips.length > 0 && (
+              <section className="section">
+                <div className="sec-head">
+                  <h2>Shared with me <span className="cnt">{sharedTrips.length}</span></h2>
+                </div>
+                <p style={{ fontFamily: 'var(--serif)', fontStyle: 'italic', fontSize: 14.5, color: 'var(--ink-soft)', margin: '-6px 0 16px' }}>
+                  Trips other Venture travellers have invited you to collaborate on.
+                </p>
+                <div className="shelf">
+                  {sharedTrips.map((t) => (
+                    <TripCard key={t.id} trip={t} />
+                  ))}
+                </div>
               </section>
             )}
 

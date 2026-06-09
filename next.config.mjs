@@ -11,6 +11,13 @@
 const nextConfig = {
   reactStrictMode: true,
 
+  async redirects() {
+    return [
+      // B1: old /new-trip URL used in some emails/links before the route was renamed
+      { source: '/new-trip', destination: '/trips/new', permanent: true },
+    ];
+  },
+
   // Production: aggressive security + caching headers
   // Development: no-store so you always see the latest code
   async headers() {

@@ -11,6 +11,25 @@ import { INTERESTS } from '@/constants/interests';
 import { useTripModal } from '@/components/TripModalProvider';
 import { formatPrice } from '@/lib/pricing';
 
+// Maps interest IDs → spot category strings that should be treated as matching.
+// Used so the filter works even when a spot's interests[] and category field aren't in sync.
+const INTEREST_CATEGORY_MAP = {
+  hiking:      ['Nature', 'Park', 'Beach'],
+  food:        ['Food', 'Café', 'Market', 'Bar'],
+  museums:     ['Museum', 'History'],
+  art:         ['Art'],
+  nightlife:   ['Nightlife', 'Bar', 'Music'],
+  beaches:     ['Beach', 'Nature'],
+  markets:     ['Market'],
+  monuments:   ['Architecture', 'History', 'Spiritual'],
+  photography: ['Art', 'Nature', 'Architecture', 'Park'],
+  relaxation:  ['Spa', 'Park', 'Nature'],
+  music:       ['Music', 'Bar'],
+  streets:     ['Offbeat', 'Shopping'],
+  offbeat:     ['Offbeat'],
+  outdoor:     ['Nature', 'Park', 'Beach'],
+};
+
 const CITY_META = {
   amsterdam:   { country: 'Netherlands',    tagline: 'Canals, culture and the streets tourists miss',      gradient: ['#667eea','#764ba2'], emoji: '🇳🇱' },
   lisbon:      { country: 'Portugal',       tagline: 'Sun-soaked tiles and Atlantic soul',                 gradient: ['#f093fb','#f5576c'], emoji: '🇵🇹' },
@@ -147,9 +166,12 @@ export default function CityDetailPage() {
       .finally(() => setLoading(false));
   }, [cityName]);
 
-  // Interests present in cached spots
+  // Show a category chip when at least one spot matches — via interests[] OR category field
   const presentInterests = INTERESTS.filter(i =>
-    spots.some(s => (s.interests ?? []).includes(i.id))
+    spots.some(s =>
+      (s.interests ?? []).includes(i.id) ||
+      (INTEREST_CATEGORY_MAP[i.id] ?? []).includes(s.category ?? '')
+    )
   );
 
   const effectiveMin = hideTourist ? Math.max(minScore, 3) : minScore;
@@ -157,7 +179,11 @@ export default function CityDetailPage() {
     const base = spots.filter(s => {
       const score = s.hiddennessScore ?? 1;
       if (score < effectiveMin) return false;
-      if (activeInterest && !(s.interests ?? []).includes(activeInterest)) return false;
+      if (activeInterest) {
+        const hasInterest  = (s.interests ?? []).includes(activeInterest);
+        const catMatches   = (INTEREST_CATEGORY_MAP[activeInterest] ?? []).includes(s.category ?? '');
+        if (!hasInterest && !catMatches) return false;
+      }
       return true;
     });
     if (sortMode === 'az') {
@@ -235,12 +261,12 @@ export default function CityDetailPage() {
           {!loading && spots.length > 0 && (
             <div style={{ marginBottom: 28 }}>
 
-              {/* Row 1: category chips */}
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+              {/* Row 1: category chips — horizontal scroll rail on mobile */}
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'nowrap', overflowX: 'auto', marginBottom: 12, paddingBottom: 4, scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
                 <button
                   onClick={() => setActiveInterest('')}
                   style={{
-                    padding: '6px 15px', borderRadius: 20,
+                    padding: '6px 15px', borderRadius: 20, flexShrink: 0,
                     border: `1px solid ${activeInterest === '' ? 'var(--accent)' : 'var(--border)'}`,
                     background: activeInterest === '' ? 'var(--accent-dim)' : 'var(--card)',
                     color: activeInterest === '' ? 'var(--accent)' : 'var(--text-secondary)',
@@ -253,7 +279,7 @@ export default function CityDetailPage() {
                     key={i.id}
                     onClick={() => setActiveInterest(activeInterest === i.id ? '' : i.id)}
                     style={{
-                      padding: '6px 13px', borderRadius: 20,
+                      padding: '6px 13px', borderRadius: 20, flexShrink: 0,
                       border: `1px solid ${activeInterest === i.id ? 'var(--accent)' : 'var(--border)'}`,
                       background: activeInterest === i.id ? 'var(--accent-dim)' : 'var(--card)',
                       color: activeInterest === i.id ? 'var(--accent)' : 'var(--text-secondary)',

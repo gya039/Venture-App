@@ -247,6 +247,17 @@ export default function NewTripPage() {
               borderRadius: 12, color: 'var(--error)', fontSize: 14, lineHeight: 1.5,
             }}>
               {error}
+              {!user && (
+                <div style={{ marginTop: 10 }}>
+                  <Link
+                    href={`/auth?returnTo=${encodeURIComponent('/trips/new')}`}
+                    className="btn btn-primary"
+                    style={{ display: 'inline-block', textDecoration: 'none', fontSize: 13, padding: '8px 16px' }}
+                  >
+                    Sign in or create a free account →
+                  </Link>
+                </div>
+              )}
             </div>
           )}
 

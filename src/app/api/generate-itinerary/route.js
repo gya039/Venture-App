@@ -133,6 +133,10 @@ export async function POST(request) {
       description:      s.description ? s.description.slice(0, 100) : null,
     }));
 
+    // Separate starred spots for explicit mention in prompt
+    const starredSummaries = spotSummaries.filter((s) => s.isStarred);
+    const unstarredSummaries = spotSummaries.filter((s) => !s.isStarred);
+
     // Build day summaries for the prompt
     const daySummaries = dayData.map((d) => ({
       dayId:      d.id,
@@ -148,14 +152,27 @@ export async function POST(request) {
       ? `The traveller is staying at: ${accommodation.address}${accommodation.lat ? ` (lat ${accommodation.lat.toFixed(4)}, lng ${accommodation.lng.toFixed(4)})` : ''}.`
       : '';
 
+    const starredBlock = starredSummaries.length > 0
+      ? `══ ★ STARRED SPOTS — MANDATORY ══
+The traveller has personally saved these ${starredSummaries.length} spots. You MUST include ALL of them in the plan.
+Do not skip any starred spot unless it is closed on EVERY available day (check openingHours carefully).
+Starred spot IDs (include every single one):
+${starredSummaries.map((s) => `  • ${s.id}  →  "${s.name}"  (${s.category ?? 'n/a'}, score ${s.hiddennessScore})`).join('\n')}
+
+`
+      : '';
+
     const prompt = `You are an expert travel planner building a day-by-day itinerary for ${city}.
 
 ${accommodationHint}
 
-You have ${spotSummaries.length} available spots and ${daySummaries.length} days to fill.
+${starredBlock}You have ${spotSummaries.length} available spots and ${daySummaries.length} days to fill.
 
-SPOTS:
-${JSON.stringify(spotSummaries, null, 1)}
+★ STARRED SPOTS (isStarred: true) — ${starredSummaries.length} spots the traveller saved:
+${starredSummaries.length > 0 ? JSON.stringify(starredSummaries, null, 1) : '(none)'}
+
+OTHER SPOTS (fill remaining slots with these after starring all starred):
+${JSON.stringify(unstarredSummaries, null, 1)}
 
 DAYS:
 ${JSON.stringify(daySummaries, null, 1)}
@@ -166,14 +183,14 @@ afternoon = 12:00 – 18:00
 evening   = 18:00 – late night
 
 ══ ABSOLUTE RULES — NEVER BREAK THESE ══
-1. Each spot may appear ONCE across the entire itinerary. No repeats.
-2. Assign 3–6 spots per day total (1–2 per slot). Do not overload any slot.
-3. Starred spots (isStarred: true) MUST be prioritised — include as many as possible before non-starred ones.
-4. Balance the days — spread good spots across all days, not just Day 1.
+1. Each spot may appear ONCE across the entire itinerary. No repeats whatsoever.
+2. Assign 3–6 spots per day total (1–3 per slot). Do not overload any slot.
+3. ★ STARRED SPOTS FIRST: ALL starred spots MUST appear in the plan. Assign every starred spot to the best available day + slot. Only after all starred spots are placed, fill remaining capacity with non-starred spots.
+4. Balance the days — spread spots across all days, not just Day 1.
 
 ══ OPENING HOURS — CHECK STRICTLY ══
 5. For each day you have a dayOfWeek. Look at the spot's openingHours for that weekday key (mon/tue/wed/thu/fri/sat/sun).
-   - If it says "closed" or the key is missing → DO NOT assign that spot that day. Skip it entirely.
+   - If it says "closed" or the key is missing → DO NOT assign that spot that day. Try a different day.
    - If the opening time is ≥ 18:00 → "evening" ONLY.
    - If the closing time is ≤ 14:00 → "morning" ONLY.
    - If a spot has no openingHours data → use category rules below.
@@ -201,7 +218,7 @@ Return ONLY valid JSON — no markdown, no explanation, no code fences:
   ]
 }
 
-Only include assignments where the spot genuinely fits the day AND the slot. When in doubt, skip the spot.`;
+CRITICAL: Every starred spot ID listed above MUST appear in your assignments array. Only skip a starred spot if it is "closed" on every single day in the DAYS list.`;
 
     const result = await callOpenAI(prompt);
 
@@ -223,6 +240,29 @@ Only include assignments where the spot genuinely fits the day AND the slot. Whe
       const spot = spots.find((s) => s.id === a.spotId);
       const slot = a.slot ?? preferredSlot(spot, days.find((d) => d.id === a.dayId)?.planDate) ?? 'morning';
       assignments.push({ ...a, slot });
+    }
+
+    // ── Force-include any starred spots the AI missed ──────────────────────
+    // This guarantees starred spots always appear regardless of AI behaviour.
+    const missingStarred = spotSummaries.filter((s) => s.isStarred && !usedSpotIds.has(s.id));
+    for (const spot of missingStarred) {
+      // Distribute missing starred spots across days that have room and where the spot is open
+      const spotFull = spots.find((s) => s.id === spot.id);
+      // Sort days by current load (least loaded first) so we spread evenly
+      const sortedDays = [...days].sort((a, b) => {
+        const ca = assignments.filter((x) => x.dayId === a.id).length;
+        const cb = assignments.filter((x) => x.dayId === b.id).length;
+        return ca - cb;
+      });
+      for (const day of sortedDays) {
+        if (!isOpenOn(spotFull, day.planDate)) continue;
+        const dayCount = assignments.filter((x) => x.dayId === day.id).length;
+        if (dayCount >= 7) continue; // hard cap — don't overload
+        const slot = preferredSlot(spotFull, day.planDate) ?? 'morning';
+        assignments.push({ dayId: day.id, spotId: spot.id, slot, spotName: spot.name });
+        usedSpotIds.add(spot.id);
+        break;
+      }
     }
 
     return Response.json({ assignments });

@@ -35,7 +35,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { getHiddennessLevel } from '@/constants/hiddenness';
 import { getTodayHours, getClosureLabel } from '@/utils/spotUtils';
 import { categoryLabel } from '@/lib/categories';
-import { formatPrice, getNumericPrice } from '@/lib/pricing';
+import { formatPrice, getNumericPrice, getCurrencySymbol } from '@/lib/pricing';
 import {
   addSpotToDayPlan,
   addEventToDayPlan,
@@ -122,7 +122,9 @@ function PickerSpot({ spot, isAdded, onAdd, isTouch, placing, onSelectForPlace }
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `pick__${spot.id}`,
     data: { type: 'picker', spot },
-    disabled: isTouch, // pointer-sensor drag disabled on coarse-pointer devices
+    // Disable drag on touch (uses tap-to-place instead) AND when already in plan
+    // — dragging an already-placed spot from the picker would create a duplicate.
+    disabled: isTouch || isAdded,
   });
   const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
 
@@ -405,7 +407,7 @@ function TravelChip({ spotA, spotB }) {
 }
 
 /* ── SlotZone (droppable slot section · tap-to-place on touch) ─────────────── */
-function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceHere }) {
+function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd }) {
   const zoneId = `zone__${dayId}__${slot}`;
   // Disable dnd-kit droppable on touch — we use tap instead
   const { setNodeRef, isOver } = useDroppable({ id: zoneId, disabled: isTouch });
@@ -426,12 +428,12 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
           {SLOT_LABEL[slot]}
         </span>
         {spots.length > 0 && !isPlacingActive && (
-          <span style={{ fontSize: '0.63rem', color: 'var(--muted)', marginLeft: 'auto', paddingRight: 4 }}>
+          <span style={{ fontSize: '0.63rem', color: 'var(--muted)' }}>
             {spots.length} spot{spots.length !== 1 ? 's' : ''}
           </span>
         )}
         {/* "Add here" pill — visible only when placing is active */}
-        {isPlacingActive && (
+        {isPlacingActive ? (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onPlaceHere(dayId, slot); }}
@@ -444,6 +446,27 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
             }}
           >
             Add here
+          </button>
+        ) : (
+          /* "+" quick-add button — always visible in slot header */
+          <button
+            type="button"
+            title={`Add a spot to ${SLOT_LABEL[slot]}`}
+            onClick={(e) => { e.stopPropagation(); onQuickAdd?.(dayId, slot); }}
+            style={{
+              marginLeft: 'auto', flexShrink: 0,
+              width: 20, height: 20, borderRadius: '50%',
+              background: 'transparent',
+              border: `1.5px solid ${SLOT_COLOR[slot]}55`,
+              color: SLOT_COLOR[slot],
+              fontSize: '0.9rem', fontWeight: 700, lineHeight: 1,
+              cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.15s',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = `${SLOT_COLOR[slot]}22`; e.currentTarget.style.borderColor = SLOT_COLOR[slot]; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = `${SLOT_COLOR[slot]}55`; }}
+          >
+            +
           </button>
         )}
       </div>
@@ -600,7 +623,7 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null }) {
   const [open,          setOpen]          = useState(true);
   const [eventsOpen,    setEventsOpen]    = useState(false);
   const [suggDismissed, setSuggDismissed] = useState(false);
@@ -678,7 +701,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {totalCost > 0 && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>~€{totalCost}/pp</span>}
+          {totalCost > 0 && <span style={{ fontSize: '0.72rem', color: 'var(--muted)' }}>~{getCurrencySymbol(city)}{totalCost}/pp</span>}
           <svg width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="var(--muted)" strokeWidth={2.5}
             style={{ transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s', flexShrink: 0 }}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
@@ -720,7 +743,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
                   cursor: applying ? 'wait' : 'pointer', opacity: applying ? 0.6 : 1,
                 }}
               >
-                {applying ? '…' : 'Optimise'}
+                {applying ? '…' : 'Accept'}
               </button>
               <button
                 type="button"
@@ -742,6 +765,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
               isTouch={isTouch}
               placingSpot={placingSpot}
               onPlaceHere={onPlaceHere}
+              onQuickAdd={onQuickAdd}
             />
           ))}
 
@@ -815,7 +839,7 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, e
               )}
               {totalCost > 0 && (
                 <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
-                  💶 ~€{totalCost}/pp
+                  💶 ~{getCurrencySymbol(city)}{totalCost}/pp
                 </span>
               )}
             </div>
@@ -1046,11 +1070,21 @@ export default function DaysBuilder({
   const [sheetSpot,      setSheetSpot]      = useState(null); // spot being scheduled
   const [sheetDayId,     setSheetDayId]     = useState(null); // expanded day row
 
+  /* ── Quick-add sheet (from "+" in planner panel) ─────────────────────────── */
+  const [quickAddTarget, setQuickAddTarget] = useState(null); // { dayId, slot } | null
+
   /* ── Filters sheet (mobile) ──────────────────────────────────────────────── */
   const [filtersSheetOpen, setFiltersSheetOpen] = useState(false);
 
+  /* ── First-use hints (localStorage) ─────────────────────────────────────── */
+  const [saveHintDone,    setSaveHintDone]    = useState(() => typeof localStorage !== 'undefined' && !!localStorage.getItem('vc_hint_save'));
+  const [addHintDone,     setAddHintDone]     = useState(() => typeof localStorage !== 'undefined' && !!localStorage.getItem('vc_hint_add'));
+  function dismissSaveHint() { localStorage.setItem('vc_hint_save', '1'); setSaveHintDone(true); }
+  function dismissAddHint()  { localStorage.setItem('vc_hint_add',  '1'); setAddHintDone(true);  }
+
   /* ── Picker state ────────────────────────────────────────────────────────── */
-  const [pickerMode,       setPickerMode]       = useState('starred'); // 'starred' | 'all'
+  // Default to 'all' when no spots are starred so new users don't see an empty panel
+  const [pickerMode,       setPickerMode]       = useState(() => savedIds?.size > 0 ? 'starred' : 'all'); // 'starred' | 'all'
   const [pickerSearch,     setPickerSearch]     = useState('');
   const [pickerCategories_, setPickerCategories_] = useState(new Set()); // multi-select
   const [pickerMinScore,   setPickerMinScore]   = useState(0);
@@ -1154,6 +1188,8 @@ export default function DaysBuilder({
     // ── Case 1: Picker drop ─────────────────────────────────────────────────
     if (activeId.startsWith('pick__')) {
       const spotId = activeId.replace('pick__', '');
+      // Guard: spot already in plan → do nothing (prevent duplicates)
+      if (addedSpotIds.has(spotId)) return;
       const tgt    = resolveContainer(overId);
       if (!tgt) return;
       const day = days.find(d => d.id === tgt.dayId);
@@ -1301,6 +1337,7 @@ export default function DaysBuilder({
   function handleOpenSheet(spot) {
     setSheetSpot(spot);
     setSheetDayId(days[0]?.id ?? null); // pre-expand first day for one-less-tap
+    dismissAddHint(); // mark "add to day" as seen on first open
   }
 
   /* ── Bottom sheet: place the spot ───────────────────────────────────────── */
@@ -1547,7 +1584,7 @@ export default function DaysBuilder({
           {!isMobile && (
             <div style={{ padding: '5px 12px 5px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Radar', min: 7 }, { label: '9+ Ultra', min: 9 }].map(({ label, min }) => (
+                {[{ label: 'All scores', min: 0 }, { label: '5+ Detour', min: 5 }, { label: '7+ Secret', min: 7 }, { label: '9+ Off-radar', min: 9 }].map(({ label, min }) => (
                   <button key={min} type="button"
                     className={'chip' + (pickerMinScore === min ? ' on' : '')}
                     onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
@@ -1559,8 +1596,52 @@ export default function DaysBuilder({
             </div>
           )}
 
+          {/* First-use hint — save spots */}
+          {!saveHintDone && pickerSpots.length > 0 && (
+            <div style={{
+              margin: '0 12px 6px', padding: '9px 12px',
+              borderRadius: 9,
+              background: 'color-mix(in oklch, var(--accent) 8%, transparent)',
+              border: '1px solid color-mix(in oklch, var(--accent) 22%, transparent)',
+              display: 'flex', alignItems: 'flex-start', gap: 8, flexShrink: 0,
+            }}>
+              <span style={{ fontSize: '0.85rem', flexShrink: 0, marginTop: 1 }}>★</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--ink)', margin: '0 0 2px' }}>
+                  Save spots you love
+                </p>
+                <p style={{ fontSize: '0.67rem', color: 'var(--muted)', margin: 0, lineHeight: 1.5 }}>
+                  Tap ★ on any spot in Research to save it here. Saved spots get priority in AI generation.
+                </p>
+              </div>
+              <button type="button" onClick={dismissSaveHint} style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: '0 2px', marginTop: -1 }}>×</button>
+            </div>
+          )}
+
           {/* Spot list */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
+            {/* First-use hint — add to day */}
+            {!addHintDone && pickerSpots.length > 0 && (
+              <div style={{
+                marginBottom: 8, padding: '9px 12px',
+                borderRadius: 9,
+                background: 'color-mix(in oklch, var(--terracotta) 7%, transparent)',
+                border: '1px solid color-mix(in oklch, var(--terracotta) 20%, transparent)',
+                display: 'flex', alignItems: 'flex-start', gap: 8,
+              }}>
+                <span style={{ fontSize: '0.85rem', flexShrink: 0, marginTop: 1 }}>📅</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--ink)', margin: '0 0 2px' }}>
+                    Add spots to your plan
+                  </p>
+                  <p style={{ fontSize: '0.67rem', color: 'var(--muted)', margin: 0, lineHeight: 1.5 }}>
+                    Tap <strong>+</strong> on any spot to choose a day and time, or use <strong>✨ Generate</strong> to auto-fill the plan with your saved spots.
+                  </p>
+                </div>
+                <button type="button" onClick={dismissAddHint} style={{ flexShrink: 0, background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: '0 2px', marginTop: -1 }}>×</button>
+              </div>
+            )}
+
             {pickerSpots.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '32px 12px', color: 'var(--muted)' }}>
                 {pickerMode === 'starred' ? (
@@ -1669,7 +1750,7 @@ export default function DaysBuilder({
                   </span>
                   {totalCost > 0 && (
                     <span style={{ fontSize: '0.72rem', color: 'var(--accent)', fontWeight: 600 }}>
-                      ~€{totalCost}/pp
+                      ~{getCurrencySymbol(city)}{totalCost}/pp
                     </span>
                   )}
                 </>
@@ -1685,12 +1766,12 @@ export default function DaysBuilder({
                 setGenModalOpen(true);
               }}
               style={{
-                padding: '6px 12px', borderRadius: 8,
+                padding: '6px 10px', borderRadius: 8, flexShrink: 0,
                 background: 'linear-gradient(135deg, color-mix(in oklch, var(--terracotta) 80%, #8b5cf6) 0%, #8b5cf6 100%)',
                 border: 'none', color: '#fff',
                 fontSize: '0.75rem', fontWeight: 700,
                 cursor: 'pointer', transition: 'opacity 0.15s',
-                display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0,
+                display: 'flex', alignItems: 'center', gap: 5,
               }}
               onMouseEnter={e => { e.currentTarget.style.opacity = '0.88'; }}
               onMouseLeave={e => { e.currentTarget.style.opacity = '1'; }}
@@ -1712,7 +1793,7 @@ export default function DaysBuilder({
                 }
               }}
               style={{
-                padding: '6px 12px', borderRadius: 8,
+                padding: '6px 10px', borderRadius: 8, flexShrink: 0,
                 background: 'transparent', border: '1px solid var(--border)',
                 color: 'var(--muted)', fontSize: '0.75rem', fontWeight: 600,
                 cursor: 'pointer', transition: 'all 0.15s',
@@ -1739,7 +1820,7 @@ export default function DaysBuilder({
                 }
               }}
               style={{
-                padding: '6px 12px', borderRadius: 8,
+                padding: '6px 10px', borderRadius: 8, flexShrink: 0,
                 background: 'transparent', border: '1px solid var(--border)',
                 color: 'var(--muted)', fontSize: '0.75rem', fontWeight: 600,
                 cursor: 'pointer', transition: 'all 0.15s',
@@ -1748,7 +1829,7 @@ export default function DaysBuilder({
               onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.color = 'var(--accent)'; }}
               onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--muted)'; }}
             >
-              📋 Template
+              📋
             </button>
           </div>
 
@@ -1775,6 +1856,7 @@ export default function DaysBuilder({
                   isTouch={isTouch}
                   placingSpot={placingSpot}
                   onPlaceHere={handlePlaceSpot}
+                  onQuickAdd={(dayId, slot) => setQuickAddTarget({ dayId, slot })}
                   events={events}
                   onAddEvent={handleAddEvent}
                   dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
@@ -1903,7 +1985,7 @@ export default function DaysBuilder({
               <div style={{ padding: '6px 18px 14px', borderTop: '1px solid var(--border)' }}>
                 <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', margin: '12px 0 10px' }}>Hiddenness score</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  {[{ label: 'All scores', min: 0 }, { label: '5+ Secret', min: 5 }, { label: '7+ Off-radar', min: 7 }, { label: '9+ Ultra hidden', min: 9 }].map(({ label, min }) => (
+                  {[{ label: 'All scores', min: 0 }, { label: '5+ Detour', min: 5 }, { label: '7+ Secret', min: 7 }, { label: '9+ Off-radar', min: 9 }].map(({ label, min }) => (
                     <button key={min} type="button"
                       className={'chip' + (pickerMinScore === min ? ' on' : '')}
                       onClick={() => setPickerMinScore(pickerMinScore === min && min !== 0 ? 0 : min)}
@@ -2096,15 +2178,24 @@ export default function DaysBuilder({
                   const { assignments } = await res.json();
                   if (!assignments?.length) throw new Error('AI returned no assignments. Try with more spots saved.');
 
-                  // Apply assignments
+                  // Snapshot currently-placed spot IDs so we don't double-add
+                  const currentlyPlacedIds = new Set(
+                    Object.values(allSlotsRef.current).flatMap((day) =>
+                      SLOTS.flatMap((sl) => (day[sl] ?? []).map((s) => s.id))
+                    )
+                  );
+
+                  // Apply assignments — skip any spot already in the plan
                   let applied = 0;
                   for (const a of assignments) {
+                    if (currentlyPlacedIds.has(a.spotId)) continue; // already placed
                     const day = days.find((d) => d.id === a.dayId);
                     if (!day) continue;
                     try {
                       await addSpotToDayPlan(a.dayId, a.spotId, city, a.slot);
+                      currentlyPlacedIds.add(a.spotId); // mark so next iteration won't re-add
                       applied++;
-                    } catch { /* spot may already exist in plan */ }
+                    } catch { /* skip */ }
                   }
                   onRefetch();
                   setGenModalOpen(false);
@@ -2147,6 +2238,116 @@ export default function DaysBuilder({
         </div>
       </>
     )}
+
+    {/* ── Quick-add sheet (+ button in planner panel) ─────────────────── */}
+    {quickAddTarget && (() => {
+      const targetDay = days.find((d) => d.id === quickAddTarget.dayId);
+      // Spots not already in the plan, starred first then by score
+      const qaSpots = [...spots]
+        .filter((s) => !addedSpotIds.has(s.id))
+        .sort((a, b) => {
+          const as = savedIds.has(a.id) ? 1 : 0;
+          const bs = savedIds.has(b.id) ? 1 : 0;
+          if (as !== bs) return bs - as; // starred first
+          return (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0);
+        });
+
+      async function handleQuickAddSpot(spot) {
+        setQuickAddTarget(null);
+        try {
+          await addSpotToDayPlan(quickAddTarget.dayId, spot.id, city, quickAddTarget.slot);
+          onRefetch();
+          toast?.success?.(`${spot.name} → ${SLOT_LABEL[quickAddTarget.slot]}, Day ${targetDay?.dayNumber}`);
+        } catch (err) {
+          console.error('[QuickAdd]', err);
+          toast?.error?.('Failed to add spot');
+        }
+      }
+
+      return (
+        <>
+          <div onClick={() => setQuickAddTarget(null)} style={{ position: 'fixed', inset: 0, zIndex: 300, background: 'rgba(0,0,0,0.52)', backdropFilter: 'blur(2px)' }} />
+          <div style={{
+            position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 301,
+            background: 'var(--card)', borderRadius: '20px 20px 0 0',
+            boxShadow: '0 -8px 40px rgba(0,0,0,0.30)',
+            animation: 'slideUp 0.22s ease',
+            maxHeight: '82dvh', display: 'flex', flexDirection: 'column',
+            paddingBottom: 'env(safe-area-inset-bottom)',
+          }} onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px 18px 14px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <div>
+                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--ink)', margin: 0 }}>
+                  Add a spot
+                </h3>
+                <p style={{ fontSize: '0.72rem', color: 'var(--muted)', margin: '3px 0 0' }}>
+                  {SLOT_LABEL[quickAddTarget.slot]}{targetDay ? ` · Day ${targetDay.dayNumber}` : ''}
+                  {targetDay?.planDate ? ` · ${fmtDayLabel(targetDay.planDate)}` : ''}
+                </p>
+              </div>
+              <button type="button" onClick={() => setQuickAddTarget(null)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1.4rem', lineHeight: 1, padding: '2px 4px' }}>×</button>
+            </div>
+
+            {/* Spot list */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '8px 14px 12px' }}>
+              {qaSpots.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '32px 12px', color: 'var(--muted)' }}>
+                  <div style={{ fontSize: '1.8rem', marginBottom: 10 }}>✅</div>
+                  <p style={{ fontSize: '0.82rem', lineHeight: 1.5 }}>All researched spots are already in your plan.</p>
+                </div>
+              ) : (
+                <>
+                  {savedIds.size > 0 && <div style={{ fontSize: '0.6rem', fontWeight: 700, color: 'var(--muted)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 8, marginTop: 4 }}>★ Saved first</div>}
+                  {qaSpots.map((spot) => {
+                    const level = getHiddennessLevel(spot.hiddennessScore ?? 1);
+                    const isStarred = savedIds.has(spot.id);
+                    return (
+                      <button
+                        key={spot.id}
+                        type="button"
+                        onClick={() => handleQuickAddSpot(spot)}
+                        style={{
+                          width: '100%', marginBottom: 6,
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '10px 12px', borderRadius: 10,
+                          border: `1px solid ${isStarred ? level.color + '40' : 'var(--border)'}`,
+                          background: isStarred ? `color-mix(in oklch, ${level.color} 6%, var(--card))` : 'var(--card)',
+                          cursor: 'pointer', textAlign: 'left', transition: 'all 0.1s',
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = level.color + '80'; e.currentTarget.style.background = `color-mix(in oklch, ${level.color} 8%, var(--card))`; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = isStarred ? level.color + '40' : 'var(--border)'; e.currentTarget.style.background = isStarred ? `color-mix(in oklch, ${level.color} 6%, var(--card))` : 'var(--card)'; }}
+                      >
+                        {/* Score badge */}
+                        <span style={{ flexShrink: 0, width: 26, height: 26, borderRadius: '50%', background: level.color, color: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.62rem', fontWeight: 700, boxShadow: `0 0 6px ${level.color}44` }}>
+                          {spot.hiddennessScore ?? 1}
+                        </span>
+                        {/* Text */}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 1 }}>
+                            {isStarred && <span style={{ color: level.color, fontSize: '0.7rem', flexShrink: 0 }}>★</span>}
+                            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {spot.name}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>
+                            {[spot.category, spot.neighbourhood].filter(Boolean).join(' · ')}
+                          </div>
+                        </div>
+                        {/* Chevron */}
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={level.color} strokeWidth={2.5} strokeLinecap="round" style={{ flexShrink: 0, opacity: 0.7 }}>
+                          <path d="M9 5l7 7-7 7"/>
+                        </svg>
+                      </button>
+                    );
+                  })}
+                </>
+              )}
+            </div>
+          </div>
+        </>
+      );
+    })()}
 
     {/* ── Add-to-plan bottom sheet ──────────────────────────────────────── */}
     {sheetSpot && (() => {

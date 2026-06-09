@@ -28,9 +28,12 @@ export default function TripCard({ trip, onDelete }) {
     ? destinations.map((d) => d.city).join(' · ')
     : first.city);
 
-  const days        = daysUntil(first.startDate);
-  const researchDone = destinations.every((d) => d.researchDone);
-  const status      = researchDone ? 'ready' : 'pending';
+  const days          = daysUntil(first.startDate);
+  const researchDone  = destinations.every((d) => d.researchDone);
+  const noneResearched = destinations.every((d) => !d.researchDone);
+  // Research is likely stuck if nothing has been researched at all — shows "0/N destinations"
+  const researchStuck = !researchDone && noneResearched && destinations.length > 0;
+  const status        = researchDone ? 'ready' : 'pending';
   const tripNights  = first.startDate && last?.endDate
     ? Math.max(0, Math.round((new Date(last.endDate) - new Date(first.startDate)) / 86400000))
     : null;
@@ -105,12 +108,22 @@ export default function TripCard({ trip, onDelete }) {
               />
             )}
             <span className="flag">{flagEmoji(first.countryCode)}</span>
-            <span className={`tc-status ${status}`}>
+            <span className={`tc-status ${researchStuck ? 'stalled' : status}`}>
               <span className="d" />
-              {researchDone ? 'Ready' : 'Researching'}
+              {researchDone ? 'Ready' : researchStuck ? 'Stalled' : 'Researching'}
             </span>
             {days !== null && days >= 0 && <span className="tc-cd">{days}d</span>}
             {days !== null && days < 0  && <span className="tc-cd">Ongoing</span>}
+            {trip.isPublic && (
+              <span style={{
+                position: 'absolute', bottom: 8, left: 8,
+                background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)',
+                color: '#fff', fontSize: '0.65rem', fontWeight: 700,
+                padding: '2px 7px', borderRadius: 20, letterSpacing: '0.03em',
+              }}>
+                🌍 Public
+              </span>
+            )}
           </div>
 
           {/* ── Body ── */}
@@ -127,8 +140,8 @@ export default function TripCard({ trip, onDelete }) {
               <span className="tc-len">
                 {destinations.filter((d) => d.researchDone).length}/{destinations.length} destinations
               </span>
-              <span style={{ color: researchDone ? 'var(--olive)' : 'var(--muted)' }} className="tc-prog">
-                {researchDone ? '✓ scored' : 'in progress'}
+              <span style={{ color: researchDone ? 'var(--olive)' : researchStuck ? 'var(--error)' : 'var(--muted)' }} className="tc-prog">
+                {researchDone ? '✓ scored' : researchStuck ? '⚠ stalled — open to retry' : 'in progress'}
               </span>
             </div>
 

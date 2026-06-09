@@ -98,8 +98,8 @@ function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActiv
         )}
         <span className="cc-flag">{flagEmoji(code)}</span>
         {isNew
-          ? <span className="cc-new">New</span>
-          : <span className="cc-live"><span className="d" />Live</span>
+          ? <span className="cc-new" title="Recently added — data still building up">New</span>
+          : <span className="cc-live" title="Full gem database live"><span className="d" />Live</span>
         }
       </div>
 
@@ -109,7 +109,7 @@ function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActiv
         <div className="cc-country">{country.toUpperCase()}</div>
         <div className="cc-vibe">{tag}</div>
         <div className="cc-foot">
-          <span className="cc-gems"><b>{gems}</b> hidden gems</span>
+          <span className="cc-gems">Hidden gems</span>
           {starCount > 0 && (
             <span style={{
               fontFamily: 'var(--mono)', fontSize: '0.65rem', fontWeight: 700,
@@ -143,7 +143,7 @@ function CityCard({ city, country, code, gems, tag, photo, vibes, isNew, isActiv
           )}
         </div>
         <div className="pv-foot">
-          <span>{gems} scored gems</span>
+          <span>Explore gems</span>
           <span className="open">Open →</span>
         </div>
       </div>

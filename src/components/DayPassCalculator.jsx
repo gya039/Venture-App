@@ -2,7 +2,7 @@
 
 import { useMemo } from 'react';
 import { getCityPass, getBestTier } from '@/constants/cityPasses';
-import { formatPrice, getNumericPrice } from '@/lib/pricing';
+import { formatPrice, getNumericPrice, getCurrencySymbol } from '@/lib/pricing';
 
 /**
  * DayPassCalculator
@@ -14,6 +14,11 @@ import { formatPrice, getNumericPrice } from '@/lib/pricing';
  */
 export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
   const pass = getCityPass(city);
+
+  // Currency symbol for this city's pass.
+  // pass.currency is a pre-formatted symbol (e.g. '£' for Edinburgh) when set;
+  // otherwise we derive it from the city name, defaulting to '€'.
+  const currSym = pass?.currency ?? getCurrencySymbol(city);
 
   const calc = useMemo(() => {
     // Sum all entry prices across all day plan spots
@@ -141,15 +146,15 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
           <span style={{ fontSize: '1.4rem' }}>{worthIt ? '✅' : '⚠️'}</span>
           <p style={{ fontWeight: 700, fontSize: '1.05rem', color: verdictColor }}>
             {worthIt
-              ? `Worth it — saves you €${Math.abs(savings).toFixed(0)}`
-              : `Probably skip it — only €${Math.abs(savings).toFixed(0)} over`
+              ? `Worth it — saves you ${currSym}${Math.abs(savings).toFixed(0)}`
+              : `Probably skip it — only ${currSym}${Math.abs(savings).toFixed(0)} over`
             }
           </p>
         </div>
         <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: 1.6 }}>
           {worthIt
-            ? `The ${tier.label} ${pass.name} (€${tier.price}) covers your planned entries and more.`
-            : `Your planned entries (€${totalEntries.toFixed(0)}) don't quite justify the ${tier.label} pass (€${tier.price}). Add more attractions to tip the balance.`
+            ? `The ${tier.label} ${pass.name} (${currSym}${tier.price}) covers your planned entries and more.`
+            : `Your planned entries (${currSym}${totalEntries.toFixed(0)}) don't quite justify the ${tier.label} pass (${currSym}${tier.price}). Add more attractions to tip the balance.`
           }
         </p>
       </div>
@@ -179,7 +184,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
               {spot.name}
             </span>
             <span style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', flexShrink: 0 }}>
-              €{getNumericPrice(spot).toFixed(0)}
+              {currSym}{getNumericPrice(spot).toFixed(0)}
             </span>
           </div>
         ))}
@@ -196,7 +201,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
               🚇 Public transit ({tripDays} day{tripDays !== 1 ? 's' : ''})
             </span>
             <span style={{ fontSize: '0.83rem', color: 'var(--text-muted)' }}>
-              ~€{transportBonus.toFixed(0)}
+              ~{currSym}{transportBonus.toFixed(0)}
             </span>
           </div>
         )}
@@ -207,7 +212,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: '0.83rem', color: 'var(--text-secondary)' }}>Total à la carte</span>
             <span style={{ fontSize: '0.95rem', fontWeight: 700 }}>
-              €{(totalEntries + transportBonus).toFixed(0)}
+              {currSym}{(totalEntries + transportBonus).toFixed(0)}
             </span>
           </div>
 
@@ -217,7 +222,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
               {tier.label} {pass.name}
             </span>
             <span style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--accent)' }}>
-              €{tier.price}
+              {currSym}{tier.price}
             </span>
           </div>
 
@@ -231,7 +236,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
               {worthIt ? 'You save' : 'Pass costs extra'}
             </span>
             <span style={{ fontSize: '1rem', fontWeight: 700, color: verdictColor }}>
-              €{Math.abs(savings).toFixed(0)}
+              {currSym}{Math.abs(savings).toFixed(0)}
             </span>
           </div>
         </div>
@@ -248,7 +253,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
           color: 'var(--text-muted)',
           lineHeight: 1.6,
         }}>
-          💡 You need <strong style={{ color: 'var(--text-secondary)' }}>€{breakEven.toFixed(0)}</strong> in paid attractions to break even on this pass. Add more spots to your day plan to hit that threshold.
+          💡 You need <strong style={{ color: 'var(--text-secondary)' }}>{currSym}{breakEven.toFixed(0)}</strong> in paid attractions to break even on this pass. Add more spots to your day plan to hit that threshold.
         </div>
       )}
 
@@ -292,7 +297,7 @@ export default function DayPassCalculator({ city, days = [], tripDays = 1 }) {
                   )}
                 </div>
                 <span style={{ fontSize: '0.9rem', fontWeight: isSelected ? 700 : 400, color: isSelected ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                  €{t.price}
+                  {currSym}{t.price}
                 </span>
               </div>
             );

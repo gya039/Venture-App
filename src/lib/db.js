@@ -60,16 +60,20 @@ function toTimestamp(iso) {
  * Upsert a user document on first sign-in.
  * Safe to call on every sign-in (no-op if doc already exists).
  */
-export async function upsertUser(uid, email) {
+export async function upsertUser(uid, email, displayName = null) {
   const ref = doc(db, 'users', uid);
   const snap = await getDoc(ref);
   if (!snap.exists()) {
     await setDoc(ref, {
       email,
+      displayName: displayName ?? null,
       currency: 'GBP',
       interests: [],
       createdAt: serverTimestamp(),
     });
+  } else if (displayName && snap.data().displayName !== displayName) {
+    // Keep displayName in sync when the user updates their Google/Auth profile
+    await updateDoc(ref, { displayName });
   }
 }
 
@@ -96,13 +100,18 @@ function assembleTripsSync(tripDocs, destsByTripId) {
     const destinations = (destsByTripId[trip.id] ?? [])
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
     return {
-      id:            trip.id,
-      name:          trip.name ?? null,
-      isMultiCity:   trip.isMultiCity ?? false,
-      interests:     trip.interests ?? [],
-      coverPhoto:    trip.coverPhoto ?? null,
-      createdAt:     toISO(trip.createdAt),
-      accommodation: trip.accommodation ?? null,   // { address, lat, lng } | null
+      id:               trip.id,
+      userId:           trip.userId ?? null,          // owner uid (needed for collab queries)
+      name:             trip.name ?? null,
+      isMultiCity:      trip.isMultiCity ?? false,
+      interests:        trip.interests ?? [],
+      coverPhoto:       trip.coverPhoto ?? null,
+      createdAt:        toISO(trip.createdAt),
+      accommodation:    trip.accommodation ?? null,   // { address, lat, lng } | null
+      isPublic:         trip.isPublic ?? false,
+      shareToken:       trip.shareToken ?? null,
+      collaboratorUids: trip.collaboratorUids ?? [],
+      collaborators:    trip.collaborators ?? [],
       destinations,
     };
   });
@@ -421,13 +430,12 @@ export async function getSpot(city, spotId) {
 // Day Plans
 // ---------------------------------------------------------------------------
 
-export async function getDayPlans(destinationId, userId) {
-  // userId is required — security rule checks resource.data.userId == request.auth.uid
-  // so the query must include a userId filter or Firestore will reject it wholesale.
+export async function getDayPlans(destinationId, _userId) {
+  // dayPlans have `allow read: if true` — no userId filter required.
+  // _userId is kept in the signature for backwards compatibility but is not used.
   const q = query(
     collection(db, 'dayPlans'),
     where('destinationId', '==', destinationId),
-    where('userId', '==', userId),
     orderBy('dayNumber', 'asc')
   );
   const snaps = await getDocs(q);
@@ -464,10 +472,9 @@ export async function addSpotToDayPlan(dayPlanId, spotId, spotCity, timeOfDay = 
   const allSnap = await getDocsFromServer(
     query(collection(db, 'dayPlanSpots'), where('dayPlanId', '==', dayPlanId))
   );
-  // Idempotency: skip if this spot is already in this exact slot
-  const alreadyExists = allSnap.docs.some(
-    d => d.data().spotId === spotId && d.data().timeOfDay === timeOfDay
-  );
+  // Idempotency: skip if this spot is already anywhere in this day plan
+  // (same spot in different slots = duplicates — never intentional)
+  const alreadyExists = allSnap.docs.some(d => d.data().spotId === spotId);
   if (alreadyExists) return;
 
   await addDoc(collection(db, 'dayPlanSpots'), {
@@ -954,6 +961,37 @@ export async function setTripPublic(tripId, userId) {
 }
 
 /**
+ * Revoke public access to a trip (and all its destinations + day plans).
+ * The share URL will return 404 after this call.
+ * Must be called by the trip owner.
+ */
+export async function setTripPrivate(tripId, userId) {
+  const batch = writeBatch(db);
+
+  batch.update(doc(db, 'trips', tripId), { isPublic: false });
+
+  const destsSnap = await getDocs(
+    query(
+      collection(db, 'destinations'),
+      where('tripId', '==', tripId),
+      where('userId', '==', userId),
+    )
+  );
+  destsSnap.docs.forEach((d) => batch.update(d.ref, { isPublic: false }));
+
+  const plansSnap = await getDocs(
+    query(
+      collection(db, 'dayPlans'),
+      where('tripId', '==', tripId),
+      where('userId', '==', userId),
+    )
+  );
+  plansSnap.docs.forEach((d) => batch.update(d.ref, { isPublic: false }));
+
+  await batch.commit();
+}
+
+/**
  * Fetch a public trip by ID (no auth required — trip must have isPublic: true).
  * Returns null if the trip doesn't exist or isn't public.
  */
@@ -1066,4 +1104,162 @@ export async function incrementDestRefresh(userId, destId, city) {
     refreshCount:    increment(1),
     lastRefreshedAt: serverTimestamp(),
   }, { merge: true });
+}
+
+// ---------------------------------------------------------------------------
+// Collaboration — private links + collaborator invites
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a secret share token for a trip (private view-only link, no account needed).
+ * Returns the token string.
+ */
+export async function generateShareToken(tripId) {
+  const token = crypto.randomUUID().replace(/-/g, '');
+  await updateDoc(doc(db, 'trips', tripId), { shareToken: token });
+  return token;
+}
+
+/**
+ * Revoke the private share token. The token URL will stop working immediately.
+ */
+export async function revokeShareToken(tripId) {
+  await updateDoc(doc(db, 'trips', tripId), { shareToken: null });
+}
+
+/**
+ * Fetch a trip by its private share token (no auth required).
+ * Returns null if the trip doesn't exist or the token doesn't match.
+ */
+export async function getTripByToken(tripId, token) {
+  if (!tripId || !token) return null;
+  const snap = await getDoc(doc(db, 'trips', tripId));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  if (!data.shareToken || data.shareToken !== token) return null;
+
+  const destsSnap = await getDocs(
+    query(collection(db, 'destinations'), where('tripId', '==', tripId))
+  );
+  const destinations = destsSnap.docs
+    .map((d) => ({ id: d.id, ...d.data(), startDate: toISO(d.data().startDate), endDate: toISO(d.data().endDate) }))
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+
+  return {
+    id:           snap.id,
+    name:         data.name ?? null,
+    isMultiCity:  data.isMultiCity ?? false,
+    isPublic:     data.isPublic ?? false,
+    creatorName:  data.creatorName ?? null,
+    creatorEmail: data.creatorEmail ?? null,
+    destinations,
+  };
+}
+
+/**
+ * Look up a registered Venture user by email address.
+ * Returns { uid, email, displayName } or null if not found.
+ */
+export async function getUserByEmail(email) {
+  if (!email) return null;
+  const q = query(
+    collection(db, 'users'),
+    where('email', '==', email.toLowerCase().trim()),
+    limit(1)
+  );
+  const snaps = await getDocs(q);
+  if (snaps.empty) return null;
+  const d = snaps.docs[0];
+  return { uid: d.id, ...d.data() };
+}
+
+/**
+ * Add a user as an editor collaborator on a trip.
+ * targetUser: { uid, email, displayName }
+ */
+export async function addCollaborator(tripId, targetUser) {
+  const tripRef = doc(db, 'trips', tripId);
+  const snap    = await getDoc(tripRef);
+  if (!snap.exists()) throw new Error('Trip not found');
+  const data = snap.data();
+
+  const existingUids = data.collaboratorUids ?? [];
+  if (existingUids.includes(targetUser.uid)) return; // already added
+
+  await updateDoc(tripRef, {
+    collaboratorUids: [...existingUids, targetUser.uid],
+    collaborators:    [...(data.collaborators ?? []), {
+      uid:         targetUser.uid,
+      email:       targetUser.email ?? null,
+      displayName: targetUser.displayName ?? null,
+      role:        'editor',
+      addedAt:     serverTimestamp(),
+    }],
+  });
+}
+
+/**
+ * Remove a collaborator from a trip by their uid.
+ */
+export async function removeCollaborator(tripId, targetUid) {
+  const tripRef = doc(db, 'trips', tripId);
+  const snap    = await getDoc(tripRef);
+  if (!snap.exists()) return;
+  const data = snap.data();
+  await updateDoc(tripRef, {
+    collaboratorUids: (data.collaboratorUids ?? []).filter((u) => u !== targetUid),
+    collaborators:    (data.collaborators    ?? []).filter((c) => c.uid !== targetUid),
+  });
+}
+
+/**
+ * Real-time listener for trips that other users have shared with `uid`.
+ * Returns the unsubscribe function.
+ */
+export function listenSharedTrips(uid, onUpdate, onError) {
+  const q = query(
+    collection(db, 'trips'),
+    where('collaboratorUids', 'array-contains', uid)
+  );
+  return onSnapshot(
+    q,
+    async (snap) => {
+      try {
+        const assembled = await Promise.all(
+          snap.docs.map(async (tripSnap) => {
+            const data      = tripSnap.data();
+            const ownerId   = data.userId;
+            // destinations are publicly readable — query without userId filter
+            const destsSnap = await getDocs(
+              query(
+                collection(db, 'destinations'),
+                where('tripId',  '==', tripSnap.id),
+                where('userId',  '==', ownerId),   // owner's uid, not the collaborator's
+              )
+            );
+            const destinations = destsSnap.docs
+              .map((d) => ({ id: d.id, ...d.data(), startDate: toISO(d.data().startDate), endDate: toISO(d.data().endDate) }))
+              .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+            return {
+              id:             tripSnap.id,
+              userId:         ownerId,
+              name:           data.name ?? null,
+              isMultiCity:    data.isMultiCity ?? false,
+              interests:      data.interests ?? [],
+              coverPhoto:     data.coverPhoto ?? null,
+              createdAt:      toISO(data.createdAt),
+              isPublic:       data.isPublic ?? false,
+              isSharedWithMe: true,   // UI flag — not stored in Firestore
+              ownerDisplayName: data.ownerDisplayName ?? null,
+              destinations,
+            };
+          })
+        );
+        onUpdate(assembled);
+      } catch (err) {
+        onError?.(err);
+      }
+    },
+    onError
+  );
 }

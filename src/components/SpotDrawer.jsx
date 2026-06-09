@@ -433,7 +433,7 @@ export default function SpotDrawer({ spot, days = [], userId, onClose, onAddToDa
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round">
                 <path d="M12 5v14M5 12h14" />
               </svg>
-              {adding ? 'Adding…' : 'Add to a day'}
+              {adding ? 'Adding…' : 'Add to day'}
             </button>
           )}
           {added && (
@@ -449,7 +449,7 @@ export default function SpotDrawer({ spot, days = [], userId, onClose, onAddToDa
             <svg viewBox="0 0 24 24" width="16" height="16" fill={starred ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
               <path d="M12 3l2.6 5.6 6.1.8-4.5 4.2 1.2 6L12 17l-5.4 2.6 1.2-6L3.3 9.4l6.1-.8z" />
             </svg>
-            {starred ? 'Starred' : 'Star'}
+            {starred ? 'Saved' : 'Save'}
           </button>
         </div>
       </div>

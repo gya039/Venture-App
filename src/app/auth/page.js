@@ -45,13 +45,13 @@ const friendlyError = (code) => {
   return map[code] ?? `Authentication error (${code ?? 'unknown'})`;
 };
 
-/* Spectrum tiers shown on the left panel */
+/* Spectrum tiers — must match HIDDENNESS_LEVELS in src/constants/hiddenness.js */
 const SPECTRUM = [
-  { score: 2,  label: 'Tourist' },
-  { score: 4,  label: 'Trodden' },
-  { score: 6,  label: 'Detour'  },
-  { score: 8,  label: 'Secret'  },
-  { score: 10, label: 'Radar'   },
+  { score: 2,  label: 'Tourist Trail'  },
+  { score: 4,  label: 'Well-Trodden'  },
+  { score: 6,  label: 'Worth a Detour' },
+  { score: 8,  label: 'Local Secret'  },
+  { score: 10, label: 'Off the Radar'  },
 ];
 
 export default function AuthPage() {

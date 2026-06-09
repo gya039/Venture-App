@@ -39,13 +39,13 @@ const JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanation, no 
       "whyWorthIt": "1 concrete, specific reason to go — a dish to order, the room to ask for, the best time to arrive, a specific experience that can't be found elsewhere. NOT generic praise like 'great atmosphere'. null if you don't know a specific detail.",
       "hiddennessReason": "short phrase e.g. 'locals-only bar' or 'off the tourist map'",
       "hiddennessScore": <integer 1–10>,
-      "hiddennessLabel": "Tourist Staple|Worth Knowing|Hidden Gem|Local Secret|Off the Map",
+      "hiddennessLabel": "Tourist Trail|Well-Trodden|Worth a Detour|Local Secret|Off the Radar",
       "editorialConfidence": <float 0.0–1.0>,
-      "category": "Art|Architecture|Bar|Beach|Café|Food|History|Market|Museum|Music|Nature|Neighbourhood|Nightlife|Offbeat|Park|Shopping|Spa|Spiritual|Other",
+      "category": "Art|Architecture|Bar|Beach|Café|Food|History|Market|Museum|Music|Nature|Nightlife|Offbeat|Park|Shopping|Spa|Spiritual",
       "interests": ["hiking","food","museums","art","nightlife","beaches","markets","monuments","photography","relaxation","music","streets","offbeat","outdoor"],
-      "entryPrice": <number in EUR; the ACTUAL standalone admission price even if the spot is included in a city pass; 0 if genuinely free to everyone; null if unknown>,
+      "entryPrice": <number in local currency of the city (GBP for UK cities, USD for US cities, JPY for Japan, etc.); the ACTUAL standalone admission price even if the spot is included in a city pass; 0 if genuinely free to everyone; null if unknown>,
       "passIncluded": <boolean: true ONLY if this spot is free solely because it is bundled in a city tourist pass and has no independently-free entry — false for all genuinely free spots and all spots with real entry prices>,
-      "currency": "EUR",
+      "currency": "<ISO 4217 code for the city's local currency, e.g. GBP for UK cities, USD for US, EUR for Eurozone, JPY for Japan, THB for Thailand, KRW for South Korea>",
       "closureStatus": "<research actual status: open | temporarily_closed | permanently_closed | seasonal>",
       "openingHours": {"mon":"09:00-18:00","tue":"09:00-18:00","wed":"09:00-18:00","thu":"09:00-18:00","fri":"09:00-20:00","sat":"10:00-18:00","sun":"closed"},
       "bestTimeToVisit": "e.g. early morning or Sunday afternoon",
@@ -77,6 +77,13 @@ For closureStatus: research the REAL current status. Use "temporarily_closed" fo
 For openingHours, use 24-hour "HH:MM-HH:MM" format per day, or "closed" for closed days.
 Use real, accurate addresses including street name and postcode where known.
 
+CRITICAL RULES — violation means the spot will be rejected:
+1. NEVER return a whole neighbourhood, district, or area as a spot (e.g. "West End", "Southside", "Finnieston" by itself is not a spot). Every entry must be a specific named venue, building, market, restaurant, park, or attraction — something with a door or an entrance you can walk through.
+2. NEVER use "Other" as a category. It does not exist. Pick the closest category from this exact list: Art | Architecture | Bar | Beach | Café | Food | History | Market | Museum | Music | Nature | Nightlife | Offbeat | Park | Shopping | Spa | Spiritual. If a spot doesn't fit a single category perfectly, pick the CLOSEST one. Examples: a rooftop observation deck → Architecture; a public bath → Spa; a street-art mural → Art; a food hall → Food; a bookshop → Shopping; a comedy club → Offbeat; a yoga studio → Spa.
+3. Do NOT use the same name as a neighbourhood as the spot name unless it refers to a specific place (e.g. "Southside" as a venue name is invalid; "Southside Market" at a specific address is valid).
+4. Use the city's LOCAL currency for entryPrice and the currency field — do NOT convert to EUR for non-Eurozone cities.
+5. Every spot MUST have a unique, specific name — not a generic description like "Local Café" or "Hidden Gem Restaurant". If you cannot name it specifically, omit it.
+
 IMPORTANT: Your response must be complete, valid, parseable JSON. If you are approaching your output limit, immediately stop adding new spots and close the JSON array cleanly with \`]}\`. A truncated response wastes everything that came before it.`;
 
 // ---------------------------------------------------------------------------
@@ -104,7 +111,8 @@ const EVENTS_JSON_SCHEMA = `Return ONLY valid JSON — no markdown, no explanati
       "isEvent": true,
       "hiddennessScore": <integer 1–10>,
       "interests": ["markets","music","food","art","nightlife","outdoor","offbeat","streets"],
-      "entryPrice": <number in GBP; 0 if free; null if unknown>,
+      "entryPrice": <number in the city's LOCAL currency; 0 if free; null if unknown>,
+      "currency": "<ISO 4217 code for the city's local currency, e.g. GBP for UK cities, EUR for Eurozone, JPY for Japan>",
       "visitDurationMinutes": <typical duration in minutes>
     }
   ]
@@ -242,19 +250,22 @@ ${CITY_SIZE_GUIDE}
 
 ${JSON_SCHEMA}`.trim();
 
-const buildPromptPass4 = (city, interests) => `You are a specialist travel researcher focused on neighbourhood character and local street life.
+const buildPromptPass4 = (city, interests) => `You are a specialist travel researcher focused on street-level local life and specific community spaces.
 
-Research "${city}" — include ONLY spots from these categories:
-- Distinct residential neighbourhoods and districts with strong local identity that tourists walk through without stopping
-- Local streets, lanes, alleyways, and thoroughfares worth exploring on foot
-- Areas undergoing interesting change — up-and-coming districts, regenerated quarters, creative clusters
-- Neighbourhood squares, local markets, community hubs that give each area its character
-- Streets or blocks where independent shops, studios, and local businesses concentrate
-- The kinds of areas where locals actually live, shop, and spend time
+Research "${city}" — each entry must be a SPECIFIC named place, not a whole neighbourhood or area. Focus on:
+- A named mural, mosaic, or piece of street art at a specific location
+- A specific community garden, allotment, or hidden green space with a name
+- A named local square, fountain, or courtyard that is a genuine local meeting point
+- A specific independent shop, studio, or workshop with a distinct identity (record shop, printmaker, vintage store)
+- A named community hall, social club, or local institution that reflects the city's character
+- A specific market stall, food hall, or street vendor that is a local institution
+- A specific pedestrian street, lane, or passageway worth exploring (named, with a precise address)
 
-Do NOT include individual restaurants, bars, famous landmarks, parks, or tourist-facing attractions. Focus on areas and streets as destinations, not specific businesses.
+Every spot MUST have a specific name and address — "Finnieston" is not a spot; "Vintage Guru, Finnieston" at 231 Dumbarton Rd is.
+Do NOT return whole neighbourhoods, districts, or areas as a spot name.
+Do NOT include restaurants, bars, famous landmarks, or tourist-facing attractions.
 
-${interests.length > 0 ? `Prioritise areas related to: ${interests.filter((i) => !['food', 'nightlife', 'beaches'].includes(i)).join(', ')}.` : ''}
+${interests.length > 0 ? `Prioritise spots related to: ${interests.filter((i) => !['food', 'nightlife', 'beaches'].includes(i)).join(', ')}.` : ''}
 
 Tag every spot in this pass with \`streets\` as their primary interest. Add other relevant tags alongside it.
 

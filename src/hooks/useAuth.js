@@ -39,7 +39,7 @@ export function useAuth() {
       clearTimeout(timeout);
       if (firebaseUser) {
         try { localStorage.setItem(CACHE_KEY, firebaseUser.uid); } catch {}
-        upsertUser(firebaseUser.uid, firebaseUser.email).catch(() => {});
+        upsertUser(firebaseUser.uid, firebaseUser.email, firebaseUser.displayName).catch(() => {});
         setUser(firebaseUser);
       } else {
         try { localStorage.removeItem(CACHE_KEY); } catch {}

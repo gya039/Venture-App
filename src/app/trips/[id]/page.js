@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
-import { getTrip, addSpotToDayPlan, getCityPass, getSpotNotes, setTripPublic, getSpotSaveCounts, saveSpotReview, getSpotReviewAggregates, saveTripAsTemplate, getDestRefreshCount, incrementDestRefresh, TRIP_REFRESH_LIMIT } from '@/lib/db';
+import { getTrip, addSpotToDayPlan, getCityPass, getSpotNotes, setTripPublic, setTripPrivate, generateShareToken, revokeShareToken, getUserByEmail, addCollaborator, removeCollaborator, getSpotSaveCounts, saveSpotReview, getSpotReviewAggregates, saveTripAsTemplate, getDestRefreshCount, incrementDestRefresh, TRIP_REFRESH_LIMIT } from '@/lib/db';
 import { track } from '@/lib/analytics';
 import { useDestination } from '@/hooks/useDestination';
 import { useDayPlanner } from '@/hooks/useDayPlanner';
@@ -27,12 +27,30 @@ import { getHiddennessLevel } from '@/constants/hiddenness';
 import { flagEmoji } from '@/utils/flagEmoji';
 import { formatPrice, getNumericPrice } from '@/lib/pricing';
 
+/* ── Interest → canonical categories mapping (for B5 category-aligned filter) ── */
+const INTEREST_TO_CATEGORIES = {
+  hiking:      ['Nature', 'Park'],
+  food:        ['Food', 'Café', 'Market'],
+  museums:     ['Museum', 'History'],
+  art:         ['Art'],
+  nightlife:   ['Bar', 'Nightlife', 'Music'],
+  beaches:     ['Beach'],
+  markets:     ['Market', 'Shopping'],
+  monuments:   ['Architecture', 'History'],
+  photography: ['Art', 'Nature', 'Offbeat'],
+  relaxation:  ['Spa'],
+  music:       ['Music', 'Bar', 'Nightlife'],
+  streets:     ['Offbeat'],
+  offbeat:     ['Offbeat'],
+  outdoor:     ['Nature', 'Park', 'Beach'],
+};
+
 /* ── Score options (shared between filter bar and filteredSpots) ─────────── */
 const SCORE_OPTS = [
-  { label: 'All scores',       min: 0 },
-  { label: '5+ Local Secret',  min: 5 },
-  { label: '7+ Off the Radar', min: 7 },
-  { label: '9+ Ultra Hidden',  min: 9 },
+  { label: 'All scores',          min: 0 },
+  { label: '5+ Worth a Detour',   min: 5 },
+  { label: '7+ Local Secret',     min: 7 },
+  { label: '9+ Off the Radar',    min: 9 },
 ];
 
 /* ── Cost filter options ─────────────────────────────────────────────────── */
@@ -129,6 +147,7 @@ function SavedSpotRow({ spot, onAdd, added, adding }) {
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 export default function TripDetailPage() {
   const { id: tripId }      = useParams();
+  const router              = useRouter();
   const { user, authReady } = useAuth();
   const toast = useToast();
   const { savedIds, toggle: toggleSave } = useSavedSpots(user?.uid);
@@ -198,6 +217,13 @@ export default function TripDetailPage() {
 
   // Share state
   const [sharing, setSharing] = useState(false);
+
+  // Collaboration panel state
+  const [showCollab,    setShowCollab]    = useState(false);
+  const [inviteEmail,   setInviteEmail]   = useState('');
+  const [inviteLoading, setInviteLoading] = useState(false);
+  const [inviteStatus,  setInviteStatus]  = useState(null); // { ok: bool, msg: string }
+  const [tokenLoading,  setTokenLoading]  = useState(false);
 
   // Keyboard shortcut help modal
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -349,7 +375,16 @@ export default function TripDetailPage() {
   // (useMemo deps are evaluated synchronously — referencing a const before its declaration = TDZ error)
   const filteredSpots = useMemo(() => {
     let s = filterInterests.size > 0
-      ? spots.filter((sp) => (sp.interests ?? []).some(i => filterInterests.has(i)))
+      ? spots.filter((sp) => {
+          const spCat = sp.category ?? 'Other';
+          return [...filterInterests].some((interestId) => {
+            // 1. Direct interests-array match (original behaviour)
+            if ((sp.interests ?? []).includes(interestId)) return true;
+            // 2. Category alignment — catches spots missing interest tags but with
+            //    the right category field (fixes B5: filter vs card mismatch)
+            return (INTEREST_TO_CATEGORIES[interestId] ?? []).includes(spCat);
+          });
+        })
       : spots;
     if (minScoreFilter > 0) {
       s = s.filter((sp) => (sp.hiddennessScore ?? 1) >= minScoreFilter);
@@ -464,9 +499,20 @@ export default function TripDetailPage() {
   useEffect(() => {
     if (spotsLoading || isResearching || researchError) return;
     if (!selectedDest) return;
-    if (spots.length > 0) return;
-    triggerResearch();
-  }, [selectedDest?.id, spots.length, spotsLoading, isResearching]); // eslint-disable-line
+
+    if (spots.length > 0 && !selectedDest.researchDone) {
+      // Spots exist but researchDone flag was never set (silent failure in a previous
+      // session). Call triggerResearch without force — it will find the cached spots
+      // and call markResearchDone, healing the stuck state without re-running AI.
+      triggerResearch(false);
+      return;
+    }
+
+    if (spots.length === 0) {
+      // No spots at all — run full research.
+      triggerResearch();
+    }
+  }, [selectedDest?.id, selectedDest?.researchDone, spots.length, spotsLoading, isResearching]); // eslint-disable-line
 
   /* ── Deep browse research ───────────────────────────────────────────────── */
   const triggerDeepResearch = useCallback(async (interestId) => {
@@ -729,34 +775,283 @@ export default function TripDetailPage() {
               <CountdownBadge date={firstDest?.startDate} />
             </span>
             <div style={{ width: 1, height: 26, background: 'var(--line)' }} />
+
+            {/* Collaborators button */}
             <button
               type="button"
-              className="sharebtn"
-              disabled={sharing}
-              onClick={async () => {
-                if (sharing || !tripId) return;
-                setSharing(true);
-                try {
-                  await setTripPublic(tripId, user?.uid);
-                  track('itinerary_shared', { tripId });
-                  window.open(`/trips/${tripId}/share`, '_blank', 'noopener,noreferrer');
-                } catch (err) {
-                  console.error('[Share] error:', err);
-                  toast.error?.('Could not generate share link');
-                } finally {
-                  setSharing(false);
-                }
+              onClick={() => setShowCollab((v) => !v)}
+              title="Sharing & collaborators"
+              style={{
+                flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5,
+                padding: '5px 10px', borderRadius: 7,
+                background: showCollab ? 'color-mix(in oklch, var(--terracotta) 12%, transparent)' : 'transparent',
+                border: showCollab ? '1px solid color-mix(in oklch, var(--terracotta) 35%, transparent)' : '1px solid var(--line-strong)',
+                color: showCollab ? 'var(--terracotta-deep)' : 'var(--muted)',
+                fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer', transition: 'all 0.15s',
               }}
-              title="Share read-only itinerary"
             >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/>
-                <path d="M8.3 10.7l7.4-4.4M8.3 13.3l7.4 4.4"/>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
               </svg>
-              {sharing ? '…' : 'Share'}
+              {(trip?.collaborators?.length ?? 0) > 0 ? `${trip.collaborators.length}` : 'Share'}
             </button>
+
+            {trip?.isPublic ? (
+              /* ── Already public: show View link + Unpublish button ── */
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <a
+                  href={`/trips/${tripId}/share`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    fontFamily: 'var(--mono)', fontSize: '0.6rem', fontWeight: 700,
+                    letterSpacing: '0.06em', textTransform: 'uppercase',
+                    color: 'var(--olive)', background: 'color-mix(in oklch, var(--olive) 12%, transparent)',
+                    border: '1px solid color-mix(in oklch, var(--olive) 30%, transparent)',
+                    borderRadius: 6, padding: '3px 8px', textDecoration: 'none',
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                  }}
+                >
+                  🌍 Public · View →
+                </a>
+                <button
+                  type="button"
+                  className="sharebtn"
+                  disabled={sharing}
+                  onClick={async () => {
+                    if (sharing || !tripId) return;
+                    if (!window.confirm('Make this itinerary private? The share link will stop working.')) return;
+                    setSharing(true);
+                    try {
+                      await setTripPrivate(tripId, user?.uid);
+                      setTrip((prev) => prev ? { ...prev, isPublic: false } : prev);
+                      track('itinerary_unpublished', { tripId });
+                      toast?.success?.('Itinerary is now private');
+                    } catch (err) {
+                      console.error('[Unpublish] error:', err);
+                      toast?.error?.('Could not unpublish');
+                    } finally {
+                      setSharing(false);
+                    }
+                  }}
+                  title="Make itinerary private"
+                  style={{ color: 'var(--text-muted)' }}
+                >
+                  {sharing ? '…' : 'Unpublish'}
+                </button>
+              </div>
+            ) : (
+              /* ── Not public: show Share button ── */
+              <button
+                type="button"
+                className="sharebtn"
+                disabled={sharing}
+                onClick={async () => {
+                  if (sharing || !tripId) return;
+                  if (!window.confirm('Make this itinerary publicly viewable? Anyone with the link will be able to see it.')) return;
+                  setSharing(true);
+                  try {
+                    await setTripPublic(tripId, user?.uid);
+                    setTrip((prev) => prev ? { ...prev, isPublic: true } : prev);
+                    track('itinerary_shared', { tripId });
+                    router.push(`/trips/${tripId}/share`);
+                  } catch (err) {
+                    console.error('[Share] error:', err);
+                    toast?.error?.('Could not generate share link');
+                  } finally {
+                    setSharing(false);
+                  }
+                }}
+                title="Share read-only itinerary"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="18" cy="5" r="2.6"/><circle cx="6" cy="12" r="2.6"/><circle cx="18" cy="19" r="2.6"/>
+                  <path d="M8.3 10.7l7.4-4.4M8.3 13.3l7.4 4.4"/>
+                </svg>
+                {sharing ? '…' : 'Share'}
+              </button>
+            )}
           </div>
         </header>
+
+        {/* ── Collaboration panel ─────────────────────────────────── */}
+        {showCollab && (
+          <div style={{
+            flexShrink: 0, background: 'var(--paper)',
+            borderBottom: '1px solid var(--line)',
+            padding: '16px 20px', display: 'flex', gap: 28, flexWrap: 'wrap',
+          }}>
+
+            {/* Private link column */}
+            <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+              <div style={{ fontSize: '0.62rem', fontFamily: 'var(--mono)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>
+                🔒 Private link · no account needed · view only
+              </div>
+              {trip?.shareToken ? (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input
+                    readOnly
+                    value={typeof window !== 'undefined' ? `${window.location.origin}/trips/${tripId}/share?token=${trip.shareToken}` : ''}
+                    style={{ flex: '1 1 180px', fontSize: '0.68rem', fontFamily: 'var(--mono)', padding: '5px 8px', borderRadius: 6, border: '1px solid var(--line)', background: 'var(--bg)', color: 'var(--ink)', minWidth: 0 }}
+                    onFocus={(e) => e.target.select()}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const url = `${window.location.origin}/trips/${tripId}/share?token=${trip.shareToken}`;
+                      navigator.clipboard.writeText(url);
+                      toast?.success?.('Link copied!');
+                    }}
+                    style={{ flexShrink: 0, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--line-strong)', background: 'transparent', color: 'var(--ink)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    disabled={tokenLoading}
+                    onClick={async () => {
+                      if (!window.confirm('Revoke this link? Anyone with it will lose access.')) return;
+                      setTokenLoading(true);
+                      try {
+                        await revokeShareToken(tripId);
+                        setTrip((p) => p ? { ...p, shareToken: null } : p);
+                        toast?.success?.('Private link revoked');
+                      } catch { toast?.error?.('Could not revoke link'); }
+                      finally { setTokenLoading(false); }
+                    }}
+                    style={{ flexShrink: 0, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer' }}
+                  >
+                    {tokenLoading ? '…' : 'Revoke'}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={tokenLoading}
+                  onClick={async () => {
+                    setTokenLoading(true);
+                    try {
+                      const token = await generateShareToken(tripId);
+                      setTrip((p) => p ? { ...p, shareToken: token } : p);
+                      toast?.success?.('Private link generated — copy it above');
+                    } catch { toast?.error?.('Could not generate link'); }
+                    finally { setTokenLoading(false); }
+                  }}
+                  style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid var(--line-strong)', background: 'transparent', color: 'var(--ink)', fontSize: '0.75rem', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  {tokenLoading ? 'Generating…' : '+ Generate private link'}
+                </button>
+              )}
+            </div>
+
+            {/* Collaborators column */}
+            <div style={{ flex: '1 1 280px', minWidth: 0 }}>
+              <div style={{ fontSize: '0.62rem', fontFamily: 'var(--mono)', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8 }}>
+                👥 Collaborators · must have an account · can edit
+              </div>
+
+              {/* Current collaborators list */}
+              {(trip?.collaborators ?? []).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
+                  {(trip.collaborators ?? []).map((c) => (
+                    <div key={c.uid} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', borderRadius: 7, background: 'var(--bg)', border: '1px solid var(--line)' }}>
+                      <div style={{ width: 26, height: 26, borderRadius: '50%', background: 'var(--terracotta)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.65rem', fontWeight: 700, flexShrink: 0 }}>
+                        {(c.displayName ?? c.email ?? '?').slice(0, 2).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {c.displayName ?? c.email}
+                        </div>
+                        {c.displayName && <div style={{ fontSize: '0.65rem', color: 'var(--muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.email}</div>}
+                      </div>
+                      <span style={{ flexShrink: 0, fontSize: '0.62rem', fontFamily: 'var(--mono)', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>editor</span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!window.confirm(`Remove ${c.displayName ?? c.email} as a collaborator?`)) return;
+                          try {
+                            await removeCollaborator(tripId, c.uid);
+                            setTrip((p) => p ? {
+                              ...p,
+                              collaborators:    (p.collaborators    ?? []).filter((x) => x.uid !== c.uid),
+                              collaboratorUids: (p.collaboratorUids ?? []).filter((x) => x !== c.uid),
+                            } : p);
+                            toast?.success?.(`${c.displayName ?? c.email} removed`);
+                          } catch { toast?.error?.('Could not remove collaborator'); }
+                        }}
+                        style={{ flexShrink: 0, padding: '3px 8px', borderRadius: 5, border: '1px solid var(--line)', background: 'transparent', color: 'var(--muted)', fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer' }}
+                        onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#dc2626'; e.currentTarget.style.color = '#dc2626'; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--line)'; e.currentTarget.style.color = 'var(--muted)'; }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Invite input */}
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="email"
+                  placeholder="Invite by email address…"
+                  value={inviteEmail}
+                  onChange={(e) => { setInviteEmail(e.target.value); setInviteStatus(null); }}
+                  onKeyDown={async (e) => { if (e.key === 'Enter') e.currentTarget.nextElementSibling?.click(); }}
+                  style={{ flex: 1, fontSize: '0.78rem', padding: '6px 10px', borderRadius: 7, border: '1px solid var(--line-strong)', background: 'var(--bg)', color: 'var(--ink)', minWidth: 0 }}
+                />
+                <button
+                  type="button"
+                  disabled={inviteLoading || !inviteEmail.trim()}
+                  onClick={async () => {
+                    if (!inviteEmail.trim()) return;
+                    setInviteLoading(true);
+                    setInviteStatus(null);
+                    try {
+                      const found = await getUserByEmail(inviteEmail.trim());
+                      if (!found) {
+                        setInviteStatus({ ok: false, msg: 'No Venture account found with that email.' });
+                        return;
+                      }
+                      if (found.uid === user?.uid) {
+                        setInviteStatus({ ok: false, msg: "That's you — you already own this trip!" });
+                        return;
+                      }
+                      if ((trip?.collaboratorUids ?? []).includes(found.uid)) {
+                        setInviteStatus({ ok: false, msg: 'Already a collaborator.' });
+                        return;
+                      }
+                      await addCollaborator(tripId, found);
+                      setTrip((p) => p ? {
+                        ...p,
+                        collaboratorUids: [...(p.collaboratorUids ?? []), found.uid],
+                        collaborators:    [...(p.collaborators ?? []), { uid: found.uid, email: found.email, displayName: found.displayName ?? null, role: 'editor' }],
+                      } : p);
+                      setInviteEmail('');
+                      setInviteStatus({ ok: true, msg: `${found.displayName ?? found.email} added as editor!` });
+                      toast?.success?.(`${found.displayName ?? found.email} can now edit this trip`);
+                    } catch (err) {
+                      setInviteStatus({ ok: false, msg: 'Something went wrong. Try again.' });
+                    } finally {
+                      setInviteLoading(false);
+                    }
+                  }}
+                  style={{ flexShrink: 0, padding: '6px 12px', borderRadius: 7, border: 'none', background: 'var(--terracotta)', color: '#fff', fontSize: '0.75rem', fontWeight: 700, cursor: inviteLoading || !inviteEmail.trim() ? 'default' : 'pointer', opacity: inviteLoading || !inviteEmail.trim() ? 0.6 : 1 }}
+                >
+                  {inviteLoading ? '…' : 'Invite'}
+                </button>
+              </div>
+              {inviteStatus && (
+                <div style={{ marginTop: 6, fontSize: '0.72rem', color: inviteStatus.ok ? 'var(--olive)' : '#dc2626', fontWeight: 500 }}>
+                  {inviteStatus.ok ? '✓ ' : '✕ '}{inviteStatus.msg}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Multi-city destination strip */}
         {trip.isMultiCity && trip.destinations.length > 1 && (
@@ -1010,7 +1305,7 @@ export default function TripDetailPage() {
                 >
                   {/* ── Sidebar controls (mode toggle only) ── */}
                   <div className="side-controls">
-                    {/* Spots / Discover mode toggle */}
+                    {/* Spots mode label — Community tab hidden until implemented */}
                     <div className="modetoggle">
                       <button
                         type="button"
@@ -1018,13 +1313,6 @@ export default function TripDetailPage() {
                         onClick={() => setResearchSubTab('spots')}
                       >
                         Spots<span className="mc">AI</span>
-                      </button>
-                      <button
-                        type="button"
-                        className={'mode' + (researchSubTab === 'discover' ? ' on' : '')}
-                        onClick={() => setResearchSubTab('discover')}
-                      >
-                        Discover<span className="mc">COMMUNITY</span>
                       </button>
                     </div>
 
@@ -1242,11 +1530,24 @@ export default function TripDetailPage() {
                       {/* Empty filter state */}
                       {!isResearching && spots.length > 0 && filteredSpots.length === 0 && (
                         <div style={{ textAlign: 'center', padding: '48px 20px', color: 'var(--muted)' }}>
-                          <div style={{ fontFamily: 'var(--serif)', fontSize: 19, fontStyle: 'italic', color: 'var(--ink-soft)', marginBottom: 6 }}>Nothing matches.</div>
-                          <div style={{ fontSize: 13.5, marginBottom: 14 }}>Try clearing a filter or your search.</div>
-                          <button type="button" onClick={() => { setFilterInterests(new Set()); setMinScoreFilter(0); setSearchQuery(''); setStarredOnly(false); }} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', background: 'var(--card)', border: '1px solid var(--line-strong)', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
-                            Clear filters
-                          </button>
+                          {starredOnly ? (
+                            <>
+                              <div style={{ fontSize: 28, marginBottom: 8 }}>☆</div>
+                              <div style={{ fontFamily: 'var(--serif)', fontSize: 18, fontStyle: 'italic', color: 'var(--ink-soft)', marginBottom: 6 }}>No starred spots yet.</div>
+                              <div style={{ fontSize: 13.5, marginBottom: 14 }}>Star spots from the list to save them here for quick access.</div>
+                              <button type="button" onClick={() => setStarredOnly(false)} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', background: 'var(--card)', border: '1px solid var(--line-strong)', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                                Show all spots
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <div style={{ fontFamily: 'var(--serif)', fontSize: 19, fontStyle: 'italic', color: 'var(--ink-soft)', marginBottom: 6 }}>Nothing matches.</div>
+                              <div style={{ fontSize: 13.5, marginBottom: 14 }}>Try clearing a filter or your search.</div>
+                              <button type="button" onClick={() => { setFilterInterests(new Set()); setMinScoreFilter(0); setSearchQuery(''); setStarredOnly(false); }} style={{ fontFamily: 'var(--mono)', fontSize: 10, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--muted)', background: 'var(--card)', border: '1px solid var(--line-strong)', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                                Clear filters
+                              </button>
+                            </>
+                          )}
                         </div>
                       )}
 
@@ -1486,6 +1787,7 @@ export default function TripDetailPage() {
                   const passValue      = totalEntries + transportBonus;
                   const savings        = passValue - passPrice;
                   const worthIt        = savings > 0;
+                  const cur            = cityPass.currency ?? '€';
 
                   return (
                     <>
@@ -1507,8 +1809,8 @@ export default function TripDetailPage() {
                             </h2>
                             <p>
                               {worthIt
-                                ? `Your planned entries total €${totalEntries}${transportBonus > 0 ? ` plus €${transportBonus} transport value` : ''}. At €${passPrice} for the pass, you save €${savings}.`
-                                : `Your planned entries total €${totalEntries} — less than the €${passPrice} pass price. Save €${Math.abs(savings)} by paying individually.`
+                                ? `Your planned entries total ${cur}${totalEntries}${transportBonus > 0 ? ` plus ${cur}${transportBonus} transport value` : ''}. At ${cur}${passPrice} for the pass, you save ${cur}${savings}.`
+                                : `Your planned entries total ${cur}${totalEntries} — less than the ${cur}${passPrice} pass price. Save ${cur}${Math.abs(savings)} by paying individually.`
                               }
                             </p>
                           </div>
@@ -1518,17 +1820,17 @@ export default function TripDetailPage() {
                         <div className="math">
                           <div className="mcell">
                             <div className="ml">Pass price</div>
-                            <div className="mv">€{passPrice}</div>
+                            <div className="mv">{cur}{passPrice}</div>
                             <div className="mvsub">{tier?.days ?? tripDays}-day pass</div>
                           </div>
                           <div className="mcell">
                             <div className="ml">Usable value</div>
-                            <div className="mv">€{passValue}</div>
+                            <div className="mv">{cur}{passValue}</div>
                             <div className="mvsub">entries + transport</div>
                           </div>
                           <div className={`mcell save${savings < 0 ? ' neg' : ''}`}>
                             <div className="ml">{savings >= 0 ? 'You save' : 'You lose'}</div>
-                            <div className="mv">€{Math.abs(savings)}</div>
+                            <div className="mv">{cur}{Math.abs(savings)}</div>
                             <div className="mvsub">{worthIt ? 'with the pass' : 'if you buy it'}</div>
                           </div>
                         </div>
@@ -1550,13 +1852,13 @@ export default function TripDetailPage() {
                                       <div className="n">{s.name}</div>
                                       <div className="m">{s.category ?? s.cat}</div>
                                     </div>
-                                    <span className="pr-cost covered">€{getNumericPrice(s)}</span>
+                                    <span className="pr-cost covered">{cur}{getNumericPrice(s)}</span>
                                   </div>
                                 ))}
                               </div>
                               <div className="pass-foot">
                                 <span className="pf-l">Total entries</span>
-                                <span className="pf-v">€{totalEntries}</span>
+                                <span className="pf-v">{cur}{totalEntries}</span>
                               </div>
                             </div>
                           )}
