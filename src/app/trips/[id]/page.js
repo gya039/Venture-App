@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/hooks/useAuth';
@@ -261,6 +261,11 @@ export default function TripDetailPage() {
   // Recurring events (Phase 3 — Glasgow only)
   const [cityEvents,       setCityEvents]        = useState([]);
 
+  // Tracks which destination ID has already had research auto-triggered this session.
+  // Prevents the infinite loop: research finishes → isResearching→false → effect re-runs
+  // → trip.researchDone is still false (trip state not refreshed) → triggers again → 🔄
+  const autoTriggeredRef = useRef(null);
+
   // Deep browse lens (Phase 2B)
   const [deepInterestId,   setDeepInterestId]   = useState(null);   // null = curated mode
   const [deepSpots,        setDeepSpots]        = useState([]);
@@ -500,16 +505,24 @@ export default function TripDetailPage() {
     if (spotsLoading || isResearching || researchError) return;
     if (!selectedDest) return;
 
+    // Guard: only auto-trigger research once per destination per session.
+    // Without this, the effect loops: research completes → isResearching flips false
+    // → effect re-runs → trip.researchDone is still false (trip state not re-fetched
+    // from Firestore) → triggers research again → visible flicker every ~200 ms.
+    if (autoTriggeredRef.current === selectedDest.id) return;
+
     if (spots.length > 0 && !selectedDest.researchDone) {
       // Spots exist but researchDone flag was never set (silent failure in a previous
       // session). Call triggerResearch without force — it will find the cached spots
       // and call markResearchDone, healing the stuck state without re-running AI.
+      autoTriggeredRef.current = selectedDest.id;
       triggerResearch(false);
       return;
     }
 
     if (spots.length === 0) {
       // No spots at all — run full research.
+      autoTriggeredRef.current = selectedDest.id;
       triggerResearch();
     }
   }, [selectedDest?.id, selectedDest?.researchDone, spots.length, spotsLoading, isResearching]); // eslint-disable-line
