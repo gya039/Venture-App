@@ -21,7 +21,7 @@ function orderedSpots(daySlots) {
     .filter((sp) => sp.lat && sp.lng && !sp.coordsMissing);
 }
 
-export default function ItineraryMapView({ days = [], allSlots = {}, dayColors = [], accommodation = null, city = '' }) {
+export default function ItineraryMapView({ days = [], allSlots = {}, dayColors = [], accommodation = null, city = '', onVisibleDaysChange = null }) {
   const containerRef    = useRef(null);
   const mapRef          = useRef(null);
   const mglRef          = useRef(null);
@@ -87,6 +87,11 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     renderAll(map, mgl);
   }, [days, allSlots, dayColors, accommodation, ready]); // eslint-disable-line
 
+  // ── Sync visible days up to DaysBuilder so the picker sidebar can filter ──────
+  useEffect(() => {
+    onVisibleDaysChange?.(visibleDays);
+  }, [visibleDays]); // eslint-disable-line
+
   // ── Toggle a single day's visibility ─────────────────────────────────────────
   const toggleDay = useCallback((dayId, solo = false) => {
     const map = mapRef.current;
@@ -111,7 +116,9 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
       days.forEach((d) => {
         const visible = next.has(d.id);
         if (map) {
-          try { map.setLayoutProperty(`itin-route-line-${d.id}`, 'visibility', visible ? 'visible' : 'none'); } catch {}
+          if (map.getLayer(`itin-route-line-${d.id}`)) {
+            map.setLayoutProperty(`itin-route-line-${d.id}`, 'visibility', visible ? 'visible' : 'none');
+          }
         }
         (markersByDay.current[d.id] ?? []).forEach((m) => {
           m.getElement().style.display = visible ? '' : 'none';
@@ -151,13 +158,16 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
     Object.values(markersByDay.current).flat().forEach((m) => { try { m.remove(); } catch {} });
     markersByDay.current = {};
 
-    // Remove previous route sources / layers
+    // Remove previous route layers then sources.
+    // Wrapped in try-catch per entry: if any removal throws (e.g. layer already gone,
+    // or source still has a dependent layer due to a partial earlier cleanup), the error
+    // would otherwise abort renderAll before any new markers are added — blank map.
     const style = map.getStyle();
     (style?.layers ?? []).forEach((l) => {
-      if (l.id.startsWith('itin-route-')) map.removeLayer(l.id);
+      if (l.id.startsWith('itin-route-')) { try { map.removeLayer(l.id); } catch {} }
     });
     Object.keys(style?.sources ?? {}).forEach((k) => {
-      if (k.startsWith('itin-route-') || k.startsWith('itin-spots-')) map.removeSource(k);
+      if (k.startsWith('itin-route-') || k.startsWith('itin-spots-')) { try { map.removeSource(k); } catch {} }
     });
 
     const allPoints = [];
@@ -208,53 +218,75 @@ export default function ItineraryMapView({ days = [], allSlots = {}, dayColors =
       const coords  = spots.map((sp) => [sp.lng, sp.lat]);
       allPoints.push(...coords);
 
-      // Route polyline
-      const srcId   = `itin-route-${day.id}`;
-      const layerId = `itin-route-line-${day.id}`;
-      if (!map.getSource(srcId)) {
-        map.addSource(srcId, {
-          type: 'geojson',
-          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } },
-        });
-        map.addLayer({
-          id:     layerId,
-          type:   'line',
-          source: srcId,
-          layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint:  {
-            'line-color':     color,
-            'line-width':     2.5,
-            'line-opacity':   0.75,
-            'line-dasharray': [1, 2.5],
-          },
-        });
+      // Route polyline.
+      // If cleanup partially failed (source still exists), update its data in place via
+      // setData() — the old guard `if (!getSource)` would silently keep stale 2-3 coord
+      // data and never update it, which is why the route line under-drew stops.
+      const srcId      = `itin-route-${day.id}`;
+      const layerId    = `itin-route-line-${day.id}`;
+      const routeData  = { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } };
+      try {
+        if (map.getSource(srcId)) {
+          // Source survived cleanup: update its coordinates in place
+          map.getSource(srcId).setData(routeData);
+        } else {
+          map.addSource(srcId, { type: 'geojson', data: routeData });
+          map.addLayer({
+            id:     layerId,
+            type:   'line',
+            source: srcId,
+            layout: { 'line-cap': 'round', 'line-join': 'round' },
+            paint:  {
+              'line-color':     color,
+              'line-width':     2.5,
+              'line-opacity':   0.75,
+              'line-dasharray': [1, 2.5],
+            },
+          });
+        }
+      } catch (err) {
+        console.warn('[ItineraryMapView] route source/layer error for day', day.dayNumber, err);
       }
 
-      // Numbered spot markers
+      // Numbered spot markers — isolated per spot so one bad coordinate doesn't
+      // abort the whole forEach and leave the rest of the day's pins un-drawn.
       spots.forEach((sp, i) => {
-        const el = document.createElement('div');
-        Object.assign(el.style, {
-          width: '26px', height: '26px', borderRadius: '50%',
-          background: color, border: '2.5px solid #fff',
-          display: 'grid', placeItems: 'center',
-          fontSize: '10px', fontWeight: '800', color: '#000',
-          lineHeight: '1', textAlign: 'center',
-          boxSizing: 'border-box',
-          boxShadow: `0 0 8px ${color}60, 0 2px 6px rgba(0,0,0,0.4)`,
-          cursor: 'pointer', userSelect: 'none', zIndex: '5',
-          fontFamily: 'ui-monospace, monospace',
-        });
-        el.textContent = i + 1;
+        try {
+          // Guard: skip spots with missing/zero coordinates — Number(null)=0 which
+          // is a valid coord but places the marker in the Atlantic, not the city.
+          const lng = Number(sp.lng);
+          const lat = Number(sp.lat);
+          if (!lng || !lat) {
+            console.warn('[ItineraryMapView] skipping spot with no coords:', sp.name, sp.lng, sp.lat);
+            return;
+          }
 
-        const marker = new mgl.Marker({ element: el, anchor: 'center' })
-          .setLngLat([sp.lng, sp.lat])
-          .setPopup(
-            new mgl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
-              .setHTML(`<div style="padding:10px 14px"><div style="font-family:monospace;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:3px">Day ${day.dayNumber} · Stop ${i + 1}</div><div style="font-size:14px;font-weight:600;color:#1a1a1a;line-height:1.2">${sp.name}</div>${sp.category ? `<div style="font-size:11px;color:#666;margin-top:3px">${sp.category}</div>` : ''}</div>`)
-          )
-          .addTo(map);
+          const el = document.createElement('div');
+          Object.assign(el.style, {
+            width: '26px', height: '26px', borderRadius: '50%',
+            background: color, border: '2.5px solid #fff',
+            display: 'grid', placeItems: 'center',
+            fontSize: '10px', fontWeight: '800', color: '#000',
+            lineHeight: '1', textAlign: 'center',
+            boxSizing: 'border-box',
+            boxShadow: `0 0 8px ${color}60, 0 2px 6px rgba(0,0,0,0.4)`,
+            cursor: 'pointer', userSelect: 'none', zIndex: '5',
+            fontFamily: 'ui-monospace, monospace',
+          });
+          el.textContent = i + 1;
 
-        markersByDay.current[day.id].push(marker);
+          const marker = new mgl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([lng, lat]) // already validated + coerced above
+            .setPopup(
+              new mgl.Popup({ offset: 16, closeButton: false, maxWidth: '220px' })
+                .setHTML(`<div style="padding:10px 14px"><div style="font-family:monospace;font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};margin-bottom:3px">Day ${day.dayNumber} · Stop ${i + 1}</div><div style="font-size:14px;font-weight:600;color:#1a1a1a;line-height:1.2">${sp.name}</div>${sp.category ? `<div style="font-size:11px;color:#666;margin-top:3px">${sp.category}</div>` : ''}</div>`)
+            )
+            .addTo(map);
+
+          markersByDay.current[day.id].push(marker);
+        } catch (err) {
+          console.warn('[ItineraryMapView] marker error for spot', sp.name, err);
+        }
       });
     });
 

@@ -496,9 +496,12 @@ export async function getDayPlanSpots(dayPlanId) {
   return snaps.docs.map((d) => ({ id: d.id, ...d.data() }));
 }
 
-/** Update the time-of-day slot and sort order for a day plan spot (used by dnd-kit drag) */
-export async function updateDayPlanSpotSlot(id, timeOfDay, sortOrder) {
-  await updateDoc(doc(db, 'dayPlanSpots', id), { timeOfDay, sortOrder });
+/** Update the time-of-day slot, sort order, and optionally the parent day for a day plan spot.
+ *  dayPlanId is passed on cross-day drags so the spot moves to the correct day in Firestore. */
+export async function updateDayPlanSpotSlot(id, timeOfDay, sortOrder, dayPlanId = null) {
+  const update = { timeOfDay, sortOrder };
+  if (dayPlanId !== null) update.dayPlanId = dayPlanId;
+  await updateDoc(doc(db, 'dayPlanSpots', id), update);
 }
 
 /** Remove a spot from a day plan */

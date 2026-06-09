@@ -7,6 +7,76 @@ export const maxDuration = 60;
 
 const DAY_ABBR = { monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun' };
 
+// ── Geographic clustering helpers ────────────────────────────────────────────
+
+/** Straight-line distance in km (haversine). */
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Cluster spots by proximity to accommodation.
+ *
+ * homeKm    – spots within this radius of accommodation are "home-base" (any day)
+ * clusterKm – distant spots within this radius of each other form a day-trip cluster
+ * maxDays   – caps clusters at (maxDays - 1) so there's always ≥1 home-base day
+ *
+ * Returns null when there's no accommodation or no distant spots (no clustering needed).
+ * Otherwise returns { homeSpots, clusters: [{ centerSpot, distKm, spots }] }
+ */
+function buildSpotClusters(allSpots, accommodation, homeKm = 15, clusterKm = 12, maxDays = Infinity) {
+  if (!accommodation?.lat || !accommodation?.lng) return null;
+
+  const hLat = Number(accommodation.lat);
+  const hLng = Number(accommodation.lng);
+  if (!hLat || !hLng) return null;
+
+  const homeSpots   = [];
+  const distantSpots = [];
+
+  for (const s of allSpots) {
+    if (!s.lat || !s.lng) { homeSpots.push(s); continue; } // no coords → treat as local
+    const d = haversineKm(hLat, hLng, Number(s.lat), Number(s.lng));
+    if (d <= homeKm) homeSpots.push({ ...s, _distKm: d });
+    else              distantSpots.push({ ...s, _distKm: d });
+  }
+
+  if (distantSpots.length === 0) return null; // everything is local — skip clustering
+
+  // Greedy clustering: start from the furthest unassigned spot and absorb nearby spots.
+  const clusters = [];
+  const remaining = [...distantSpots].sort((a, b) => b._distKm - a._distKm);
+
+  while (remaining.length > 0) {
+    const center = remaining.shift(); // furthest spot becomes cluster centre
+    const clusterSpots = [center];
+    const stillLeft = [];
+    for (const s of remaining) {
+      if (haversineKm(Number(center.lat), Number(center.lng), Number(s.lat), Number(s.lng)) <= clusterKm) {
+        clusterSpots.push(s);
+      } else {
+        stillLeft.push(s);
+      }
+    }
+    remaining.length = 0;
+    remaining.push(...stillLeft);
+    clusters.push({ centerSpot: center, distKm: center._distKm, spots: clusterSpots });
+  }
+
+  // If there are more clusters than days allow, merge excess into homeSpots
+  const maxClusters = Math.max(0, maxDays - 1);
+  if (clusters.length > maxClusters) {
+    const excess = clusters.splice(maxClusters);
+    for (const c of excess) homeSpots.push(...c.spots);
+  }
+
+  return { homeSpots, clusters };
+}
+
 /** Parse a 24h time string "HH:MM" → minutes since midnight */
 function toMins(t) {
   if (!t || typeof t !== 'string') return null;
@@ -149,8 +219,47 @@ export async function POST(request) {
     }));
 
     const accommodationHint = accommodation?.address
-      ? `The traveller is staying at: ${accommodation.address}${accommodation.lat ? ` (lat ${accommodation.lat.toFixed(4)}, lng ${accommodation.lng.toFixed(4)})` : ''}.`
+      ? `The traveller is staying at: ${accommodation.address}${accommodation.lat ? ` (lat ${Number(accommodation.lat).toFixed(4)}, lng ${Number(accommodation.lng).toFixed(4)})` : ''}.`
       : '';
+
+    // ── Geographic clustering (server-side, pre-AI) ─────────────────────────
+    // Groups outlying spots into area clusters so the AI can't scatter a single
+    // distant town (e.g. Kotor) across every day of the trip.
+    const HOME_KM    = 15; // spots within this radius of accommodation = home-base
+    const CLUSTER_KM = 12; // distant spots within this radius of each other = one day-trip
+    const clusterResult = buildSpotClusters(sorted, accommodation, HOME_KM, CLUSTER_KM, days.length);
+
+    // Build the cluster block injected into the prompt (empty string when no clusters)
+    let clusterBlock = '';
+    if (clusterResult && clusterResult.clusters.length > 0) {
+      const { homeSpots, clusters } = clusterResult;
+      const clusterDayCount = clusters.length;
+      const homeDayCount    = Math.max(1, days.length - clusterDayCount);
+
+      clusterBlock = `
+══ GEOGRAPHIC DAY-TRIP CLUSTERS — MANDATORY ══
+The traveller's base is: ${accommodation.address}
+
+Spots have been pre-grouped by distance. You MUST respect this grouping.
+
+${clusters.map((c, i) => {
+  const area = c.spots.map(s => s.name).join(', ');
+  return `DAY-TRIP CLUSTER ${i + 1}  (≈${Math.round(c.distKm)}km from base — put ALL on the SAME single day):
+${c.spots.map(s => `  • ${s.id}  "${s.name}"  (${s.category ?? 'n/a'})`).join('\n')}`;
+}).join('\n\n')}
+
+HOME-BASE SPOTS (within ${HOME_KM}km of accommodation — spread across the ${homeDayCount} non-cluster day${homeDayCount !== 1 ? 's' : ''}):
+${homeSpots.map(s => `  • ${s.id}  "${s.name}"  (${s.category ?? 'n/a'})`).join('\n')}
+
+CLUSTER RULES (ABSOLUTE — higher priority than all other rules):
+A. Each DAY-TRIP CLUSTER occupies exactly ONE day. Never split it across days.
+B. NEVER assign spots from two different clusters to the same day.
+C. NEVER visit the same cluster area on more than one day (e.g., if Cluster 1 is Kotor, there is ONE Kotor day only — not a Kotor day on Day 1, Day 2, Day 3…).
+D. Home-base spots fill the remaining ${homeDayCount} day${homeDayCount !== 1 ? 's' : ''} — do not mix home-base and cluster spots on the same day.
+E. You have ${clusterDayCount} day-trip day${clusterDayCount !== 1 ? 's' : ''} and ${homeDayCount} home-base day${homeDayCount !== 1 ? 's' : ''} to fill (${days.length} total).
+
+`;
+    }
 
     const starredBlock = starredSummaries.length > 0
       ? `══ ★ STARRED SPOTS — MANDATORY ══
@@ -166,12 +275,12 @@ ${starredSummaries.map((s) => `  • ${s.id}  →  "${s.name}"  (${s.category ??
 
 ${accommodationHint}
 
-${starredBlock}You have ${spotSummaries.length} available spots and ${daySummaries.length} days to fill.
+${clusterBlock}${starredBlock}You have ${spotSummaries.length} available spots and ${daySummaries.length} days to fill.
 
 ★ STARRED SPOTS (isStarred: true) — ${starredSummaries.length} spots the traveller saved:
 ${starredSummaries.length > 0 ? JSON.stringify(starredSummaries, null, 1) : '(none)'}
 
-OTHER SPOTS (fill remaining slots with these after starring all starred):
+OTHER SPOTS (fill remaining slots with these after placing all starred):
 ${JSON.stringify(unstarredSummaries, null, 1)}
 
 DAYS:
@@ -187,29 +296,29 @@ evening   = 18:00 – late night
 2. Assign 3–6 spots per day total (1–3 per slot). Do not overload any slot.
 3. ★ STARRED SPOTS FIRST: ALL starred spots MUST appear in the plan. Assign every starred spot to the best available day + slot. Only after all starred spots are placed, fill remaining capacity with non-starred spots.
 4. Balance the days — spread spots across all days, not just Day 1.
-
+${clusterBlock ? '5. CLUSTER RULES above (A–E) take priority over everything except opening-hours closures.\n' : ''}
 ══ OPENING HOURS — CHECK STRICTLY ══
-5. For each day you have a dayOfWeek. Look at the spot's openingHours for that weekday key (mon/tue/wed/thu/fri/sat/sun).
+${clusterBlock ? '6' : '5'}. For each day you have a dayOfWeek. Look at the spot's openingHours for that weekday key (mon/tue/wed/thu/fri/sat/sun).
    - If it says "closed" or the key is missing → DO NOT assign that spot that day. Try a different day.
    - If the opening time is ≥ 18:00 → "evening" ONLY.
    - If the closing time is ≤ 14:00 → "morning" ONLY.
    - If a spot has no openingHours data → use category rules below.
 
 ══ CATEGORY / TYPE RULES ══
-6. Bar, Nightlife, Music venue, Club, Pub (for drinks):
+${clusterBlock ? '7' : '6'}. Bar, Nightlife, Music venue, Club, Pub (for drinks):
    → "evening" ONLY. NEVER morning or afternoon. A bar that opens at 11:00 is still "evening" for planning purposes.
-7. Café, Bakery, Brunch spot, Market (food in morning):
+${clusterBlock ? '8' : '7'}. Café, Bakery, Brunch spot, Market (food in morning):
    → "morning" ONLY.
-8. Museum, Gallery, Art, History, Architecture, Monument:
+${clusterBlock ? '9' : '8'}. Museum, Gallery, Art, History, Architecture, Monument:
    → "morning" or "afternoon" ONLY. Never evening unless explicitly open late.
-9. Restaurant (sit-down dinner):
+${clusterBlock ? '10' : '9'}. Restaurant (sit-down dinner):
    → "evening" preferred, "afternoon" acceptable.
-10. Park, Garden, Viewpoint, Outdoor:
+${clusterBlock ? '11' : '10'}. Park, Garden, Viewpoint, Outdoor:
     → Any slot, but prefer "morning" or "afternoon" for daylight.
 
 ══ GEOGRAPHY ══
-11. Cluster nearby spots within the same day. Use lat/lng to group spots that are close together — this reduces unnecessary travel.
-12. ${accommodationHint ? 'Start each day\'s route from the accommodation location when clustering.' : 'Try to plan each day as a logical walking/transit loop.'}
+${clusterBlock ? '12' : '11'}. Cluster nearby spots within the same day. Use lat/lng to group spots that are close together — this reduces unnecessary travel.
+${clusterBlock ? '13' : '12'}. ${accommodationHint ? 'Start each day\'s route from the accommodation location when clustering.' : 'Try to plan each day as a logical walking/transit loop.'}
 
 Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {

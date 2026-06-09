@@ -118,7 +118,7 @@ function GripIcon() {
 }
 
 /* ── PickerSpot (draggable on pointer · tap-to-select on touch) ────────────── */
-function PickerSpot({ spot, isAdded, onAdd, isTouch, placing, onSelectForPlace }) {
+function PickerSpot({ spot, isAdded, placedIn = null, onAdd, isTouch, placing, onSelectForPlace }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `pick__${spot.id}`,
     data: { type: 'picker', spot },
@@ -196,8 +196,23 @@ function PickerSpot({ spot, isAdded, onAdd, isTouch, placing, onSelectForPlace }
           color: isAdded ? 'var(--muted)' : 'var(--ink)',
           display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
         }}>
-          {isAdded && <span style={{ color: level.color }}>✓ </span>}{spot.name}
+          {spot.name}
         </div>
+        {/* "In plan" badge — shows which day + slot the spot is already placed in */}
+        {placedIn && (
+          <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 3 }}>
+            <span style={{
+              fontSize: '0.6rem', fontWeight: 700, lineHeight: 1,
+              color: level.color,
+              background: `${level.color}18`,
+              border: `1px solid ${level.color}40`,
+              borderRadius: 4, padding: '2px 5px',
+              letterSpacing: '0.02em',
+            }}>
+              ✓ Day {placedIn.dayNumber} · {SLOT_LABEL[placedIn.slot]}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Quick-add button — adds directly to Day 1 */}
@@ -471,10 +486,16 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
         )}
       </div>
 
-      {/* Drop zone — tappable when placing is active */}
+      {/* Drop zone — tappable when placing is active OR when empty (opens quick-add) */}
       <div
         ref={setNodeRef}
-        onClick={isPlacingActive ? handleZoneTap : undefined}
+        onClick={
+          isPlacingActive
+            ? handleZoneTap
+            : isEmpty
+              ? (e) => { e.stopPropagation(); onQuickAdd?.(dayId, slot); }
+              : undefined
+        }
         style={{
           minHeight:    isEmpty ? 44 : 'auto',
           borderRadius: 8,
@@ -488,7 +509,7 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
           display:      'flex', flexDirection: 'column',
           alignItems:   isEmpty ? 'center' : 'stretch',
           justifyContent: isEmpty ? 'center' : 'flex-start',
-          cursor: isPlacingActive ? 'pointer' : 'default',
+          cursor: (isPlacingActive || isEmpty) ? 'pointer' : 'default',
         }}
       >
         <SortableContext items={spots.map(s => s.dayPlanSpotId)} strategy={verticalListSortingStrategy}>
@@ -508,11 +529,31 @@ function SlotZone({ slot, dayId, spots, onRemove, isTouch, placingSpot, onPlaceH
                 ? 'color-mix(in srgb, var(--terracotta) 75%, transparent)'
                 : isOver ? 'var(--accent)' : 'color-mix(in srgb, var(--muted) 55%, transparent)',
             }}>
-              {isPlacingActive ? '📌 Tap to add here' : isOver ? '📌 Drop here' : 'Tap + to add, or drag here'}
+              {isPlacingActive ? '📌 Tap to add here' : isOver ? '📌 Drop here' : 'Tap to add a spot'}
             </span>
           </div>
         )}
       </div>
+
+      {/* "Add another spot" link — shown below existing spots so the tap target is always reachable */}
+      {!isEmpty && !isPlacingActive && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onQuickAdd?.(dayId, slot); }}
+          style={{
+            display: 'block', width: '100%', marginTop: 4,
+            padding: '4px 8px', borderRadius: 6, textAlign: 'center',
+            border: `1px dashed ${SLOT_COLOR[slot]}44`,
+            background: 'transparent',
+            color: 'var(--muted)', fontSize: '0.67rem',
+            cursor: 'pointer', transition: 'all 0.15s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.borderColor = SLOT_COLOR[slot]; e.currentTarget.style.color = SLOT_COLOR[slot]; e.currentTarget.style.background = `${SLOT_COLOR[slot]}0a`; }}
+          onMouseLeave={(e) => { e.currentTarget.style.borderColor = `${SLOT_COLOR[slot]}44`; e.currentTarget.style.color = 'var(--muted)'; e.currentTarget.style.background = 'transparent'; }}
+        >
+          + add a spot
+        </button>
+      )}
     </div>
   );
 }
@@ -623,7 +664,7 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null, city = null }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null, city = null, onApplyOrder = null }) {
   const [open,          setOpen]          = useState(true);
   const [eventsOpen,    setEventsOpen]    = useState(false);
   const [suggDismissed, setSuggDismissed] = useState(false);
@@ -654,16 +695,23 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, o
     if (applying) return;
     setApplying(true);
     try {
-      // Redistribute into slots proportionally based on original counts
+      // Redistribute into slots proportionally based on original slot counts
       const counts = SLOTS.map(sl => (slots[sl] ?? []).length);
+      const newSlots = { morning: [], afternoon: [], evening: [] };
       let idx = 0;
       for (let si = 0; si < SLOTS.length; si++) {
         const slot = SLOTS[si];
         for (let k = 0; k < counts[si]; k++) {
           const spot = suggested[idx++];
-          if (spot) await updateDayPlanSpotSlot(spot.dayPlanSpotId, slot, k);
+          if (spot) {
+            newSlots[slot].push({ ...spot, timeOfDay: slot, sortOrder: k });
+            await updateDayPlanSpotSlot(spot.dayPlanSpotId, slot, k);
+          }
         }
       }
+      // Push the new order into the parent's allSlots_ so the UI updates immediately
+      // (without this, Firestore is correct but the React state stays stale until reload).
+      onApplyOrder?.(day.id, newSlots);
       setSuggDismissed(true); // hide banner after applying
     } catch (err) {
       console.error('[DaySection] applyOrder error:', err);
@@ -1032,6 +1080,23 @@ export default function DaysBuilder({
     return ids;
   }, [allSlots_]);
 
+  /* ── Placed info: spotId → { dayId, dayNumber, slot } for badge + map filter ─ */
+  const placedInfo = useMemo(() => {
+    const map = {};
+    days.forEach(day => {
+      SLOTS.forEach(slot => {
+        (allSlots_[day.id]?.[slot] ?? []).forEach(sp => {
+          map[sp.id] = { dayId: day.id, dayNumber: day.dayNumber, slot };
+        });
+      });
+    });
+    return map;
+  }, [allSlots_, days]);
+
+  /* ── Map day filter — synced from ItineraryMapView's visibleDays ─────────── */
+  // null = all days shown (no filter); Set<dayId> = only those days visible
+  const [mapFilterDays, setMapFilterDays] = useState(null);
+
   /* ── Touch + mobile detection ───────────────────────────────────────────── */
   const [isTouch,  setIsTouch]  = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -1161,10 +1226,27 @@ export default function DaysBuilder({
     const tgt = resolveContainer(over.id);
     if (!tgt || (tgt.dayId === srcDayId && tgt.slot === srcSlot)) return;
 
-    // Optimistic cross-container move
+    // Optimistic cross-container move.
+    // IMPORTANT: when moving within the SAME day (different slot), srcDayId === tgt.dayId.
+    // We must build both slot changes under a SINGLE [srcDayId] key.
+    // Writing two keys with the same value in one object literal causes JS last-write-wins,
+    // which silently discards the removal from srcSlot — leaving the spot in BOTH slots
+    // and producing the visible 4× duplication bug.
     setAllSlots(prev => {
       const spot = prev[srcDayId]?.[srcSlot]?.find(sp => sp.dayPlanSpotId === activeId);
       if (!spot) return prev;
+      if (srcDayId === tgt.dayId) {
+        // Same-day cross-slot: handle both slots under one key so neither overwrites the other.
+        return {
+          ...prev,
+          [srcDayId]: {
+            ...prev[srcDayId],
+            [srcSlot]: prev[srcDayId][srcSlot].filter(sp => sp.dayPlanSpotId !== activeId),
+            [tgt.slot]: [...(prev[srcDayId]?.[tgt.slot] ?? []), { ...spot, timeOfDay: tgt.slot }],
+          },
+        };
+      }
+      // Cross-day: keys are different, no collision risk.
       return {
         ...prev,
         [srcDayId]: { ...prev[srcDayId], [srcSlot]: prev[srcDayId][srcSlot].filter(sp => sp.dayPlanSpotId !== activeId) },
@@ -1237,14 +1319,17 @@ export default function DaysBuilder({
       });
     }
 
-    // Persist entire state to Firestore
+    // Persist entire state to Firestore.
+    // We pass dayId so cross-day drags update dayPlanId in Firestore; without this,
+    // dragging to a different day only looks correct in the current session and
+    // silently reverts on the next page load.
     setTimeout(async () => {
       try {
         const writes = [];
         for (const dayId of Object.keys(allSlotsRef.current)) {
           for (const slot of SLOTS) {
             (allSlotsRef.current[dayId]?.[slot] ?? []).forEach((sp, idx) => {
-              writes.push(updateDayPlanSpotSlot(sp.dayPlanSpotId, slot, idx));
+              writes.push(updateDayPlanSpotSlot(sp.dayPlanSpotId, slot, idx, dayId));
             });
           }
         }
@@ -1321,6 +1406,13 @@ export default function DaysBuilder({
     if (spot !== null && isMobile) setMobilePanel('planner');
   }
 
+  /* ── Route suggestion: apply optimised order ────────────────────────────── */
+  // Called by DaySection after it has persisted the new order to Firestore.
+  // Updates allSlots_ immediately so the UI reflects the reorder without a refetch.
+  function handleApplyOrder(dayId, newSlots) {
+    setAllSlots(prev => ({ ...prev, [dayId]: newSlots }));
+  }
+
   /* ── Add recurring event to a day slot ──────────────────────────────────── */
   async function handleAddEvent(dayId, event, slot) {
     try {
@@ -1391,8 +1483,15 @@ export default function DaysBuilder({
     if (pickerMinScore > 0) s = s.filter(sp => (sp.hiddennessScore ?? 1) >= pickerMinScore);
     const q = pickerSearch.toLowerCase().trim();
     if (q) s = s.filter(sp => sp.name?.toLowerCase().includes(q) || sp.category?.toLowerCase().includes(q));
+    // When the map is in a day-filtered view, only show spots placed in the visible day(s)
+    if (planView === 'map' && mapFilterDays !== null && mapFilterDays.size < days.length) {
+      s = s.filter(sp => {
+        const info = placedInfo[sp.id];
+        return info && mapFilterDays.has(info.dayId);
+      });
+    }
     return [...s].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
-  }, [pickerBase, pickerCategories_, pickerMinScore, pickerSearch]);
+  }, [pickerBase, pickerCategories_, pickerMinScore, pickerSearch, planView, mapFilterDays, placedInfo, days.length]);
 
   /* ── Totals ─────────────────────────────────────────────────────────────── */
   const totalSpots = useMemo(() =>
@@ -1642,9 +1741,31 @@ export default function DaysBuilder({
               </div>
             )}
 
+            {/* Day filter banner — shown when map is focused on a specific day */}
+            {planView === 'map' && mapFilterDays !== null && mapFilterDays.size < days.length && (
+              <div style={{
+                margin: '0 0 8px', padding: '6px 10px', borderRadius: 7,
+                background: 'color-mix(in oklch, var(--accent) 10%, var(--card))',
+                border: '1px solid color-mix(in oklch, var(--accent) 30%, transparent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6,
+              }}>
+                <span style={{ fontSize: '0.65rem', color: 'var(--accent)', fontWeight: 600 }}>
+                  🗺 Showing Day {days.filter(d => mapFilterDays.has(d.id)).map(d => d.dayNumber).join(', ')} only
+                </span>
+                <span style={{ fontSize: '0.62rem', color: 'var(--muted)' }}>
+                  Click day again to reset
+                </span>
+              </div>
+            )}
+
             {pickerSpots.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '32px 12px', color: 'var(--muted)' }}>
-                {pickerMode === 'starred' ? (
+                {planView === 'map' && mapFilterDays !== null && mapFilterDays.size < days.length ? (
+                  <>
+                    <div style={{ fontSize: '1.8rem', marginBottom: 10 }}>📅</div>
+                    <p style={{ fontSize: '0.8rem', lineHeight: 1.5 }}>No spots placed on this day yet.</p>
+                  </>
+                ) : pickerMode === 'starred' ? (
                   <>
                     <div style={{ fontSize: '1.8rem', marginBottom: 10 }}>★</div>
                     <p style={{ fontSize: '0.8rem', lineHeight: 1.6, marginBottom: 6, color: 'var(--ink)' }}>
@@ -1671,6 +1792,7 @@ export default function DaysBuilder({
                   key={spot.id}
                   spot={spot}
                   isAdded={addedSpotIds.has(spot.id)}
+                  placedIn={placedInfo[spot.id] ?? null}
                   onAdd={handleOpenSheet}
                   isTouch={isTouch}
                   placing={placingSpot?.id === spot.id}
@@ -1730,7 +1852,7 @@ export default function DaysBuilder({
             {/* List / Map toggle */}
             <div style={{ display: 'flex', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)', flexShrink: 0 }}>
               {[['list', '☰ List'], ['map', '🗺 Map']].map(([v, label]) => (
-                <button key={v} type="button" onClick={() => setPlanView(v)}
+                <button key={v} type="button" onClick={() => { setPlanView(v); if (v !== 'map') setMapFilterDays(null); }}
                   style={{
                     padding: '5px 10px', border: 'none', fontSize: '0.73rem',
                     background: planView === v ? 'var(--accent-dim)' : 'transparent',
@@ -1841,6 +1963,7 @@ export default function DaysBuilder({
               dayColors={DAY_COLORS}
               accommodation={resolvedAccommodation}
               city={city}
+              onVisibleDaysChange={setMapFilterDays}
             />
           )}
 
@@ -1862,6 +1985,7 @@ export default function DaysBuilder({
                   dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
                   city={city}
                   accommodation={resolvedAccommodation}
+                  onApplyOrder={handleApplyOrder}
                 />
               ))}
 
