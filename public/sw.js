@@ -5,7 +5,7 @@
 //   external URLs    → network-only (Firebase, Mapbox, OpenAI)
 //   everything else  → network-first, fall back to cache (pages, icons, manifest)
 
-const CACHE = 'venture-v1';
+const CACHE = 'venture-v2';
 
 const PRECACHE = [
   '/',

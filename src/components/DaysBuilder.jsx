@@ -623,7 +623,7 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null, city = null }) {
   const [open,          setOpen]          = useState(true);
   const [eventsOpen,    setEventsOpen]    = useState(false);
   const [suggDismissed, setSuggDismissed] = useState(false);
@@ -832,9 +832,9 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, o
                   ⏱ ~{fmtDuration(totalDuration)}
                 </span>
               )}
-              {totalDistKm > 0.1 && (
+              {dayDistKm > 0.1 && (
                 <span style={{ fontSize: '0.68rem', color: 'var(--muted)' }}>
-                  🚶 ~{fmtKm(totalDistKm)}
+                  🚶 ~{fmtKm(dayDistKm)}
                 </span>
               )}
               {totalCost > 0 && (
@@ -1860,6 +1860,7 @@ export default function DaysBuilder({
                   events={events}
                   onAddEvent={handleAddEvent}
                   dayColor={DAY_COLORS[dayIndex % DAY_COLORS.length]}
+                  city={city}
                   accommodation={resolvedAccommodation}
                 />
               ))}
