@@ -181,11 +181,18 @@ export function clusterSpots(validSpots, accommodation, opts = {}) {
  * spots are open on that day. Larger clusters get priority. Ties broken by
  * day number (ascending), then cluster index (ascending).
  *
+ * @param {object[]} clusters
+ * @param {object[]} days
+ * @param {Set<string>} [lockedHomeDayIds] — day IDs that already have locked
+ *   home-base spots; these are excluded from cluster assignment so the planner
+ *   doesn't turn a partially-packed home day into a cluster day.
+ *
  * Returns Map<clusterIndex → dayId>.
  */
-export function assignClusterDays(clusters, days) {
+export function assignClusterDays(clusters, days, lockedHomeDayIds = new Set()) {
   const clusterDayMap = new Map();
-  const usedDayIds    = new Set();
+  // Seed usedDayIds with locked home days so they are never chosen as cluster days
+  const usedDayIds    = new Set(lockedHomeDayIds);
 
   // Process largest clusters first; tie-break by cluster index
   const indices = clusters
@@ -224,11 +231,21 @@ export function assignClusterDays(clusters, days) {
  *
  * A rebalance pass then moves non-starred spots from over-budget days to
  * under-budget days (< 50% filled) until stable.
+ *
+ * @param {object[]} homeSpots
+ * @param {object[]} homeDays
+ * @param {object}   accommodation
+ * @param {object}   [opts]
+ * @param {object}   [lockedState] — pre-consumed capacity from locked assignments
+ *   preloadedBudgetByDay: { [dayId]: minutes }  — budget already used by locked spots
+ *   preloadedCountByDay:  { [dayId]: number }   — slot count already used by locked spots
  */
-export function packHomeDays(homeSpots, homeDays, accommodation, opts = {}) {
+export function packHomeDays(homeSpots, homeDays, accommodation, opts = {}, lockedState = {}) {
   const mergedOpts = { ...DEFAULT_OPTIONS, ...opts };
   const { budgetMinutes, roadFactor, walkKmh, transitKmh } = mergedOpts;
   const travelOpts = { roadFactor, walkKmh, transitKmh };
+
+  const { preloadedBudgetByDay = {}, preloadedCountByDay = {} } = lockedState;
 
   if (homeDays.length === 0) {
     return {
@@ -240,18 +257,22 @@ export function packHomeDays(homeSpots, homeDays, accommodation, opts = {}) {
   const sorted     = [...homeSpots].sort((a, b) => compareTuple(spotSortKey(a), spotSortKey(b)));
   const sortedDays = [...homeDays].sort((a, b) => a.dayNumber - b.dayNumber);
 
-  // Per-day mutable state
+  // Per-day mutable state — start totalMinutes from locked pre-load
   const state = {};
   for (const day of sortedDays) {
-    state[day.id] = { day, spots: [], totalMinutes: 0 };
+    state[day.id] = { day, spots: [], totalMinutes: preloadedBudgetByDay[day.id] ?? 0 };
   }
 
   const unplaced = [];
 
   for (const spot of sorted) {
-    // Prefer least-loaded open day; tie-break by dayNumber
+    // Prefer least-loaded open day; tie-break by dayNumber.
+    // Capacity check subtracts locked spots already occupying slots on the day.
     const candidates = sortedDays
-      .filter(d => isOpenOnWeekday(spot, d.planDate) && state[d.id].spots.length < MAX_PER_SLOT * 3)
+      .filter(d =>
+        isOpenOnWeekday(spot, d.planDate) &&
+        state[d.id].spots.length + (preloadedCountByDay[d.id] ?? 0) < MAX_PER_SLOT * 3
+      )
       .sort((a, b) => state[a.id].totalMinutes - state[b.id].totalMinutes || a.dayNumber - b.dayNumber);
 
     let placed = false;
@@ -339,8 +360,15 @@ export function packHomeDays(homeSpots, homeDays, accommodation, opts = {}) {
  * evening-only spots are processed first so they claim evening slots before
  * 'any' spots overflow into evening.
  * Tie-break within same fit-priority: lexicographic spot id.
+ *
+ * @param {object[]} assignments
+ * @param {object[]} spots
+ * @param {object}   [lockedSlotsByDay] — pre-consumed slot counts from locked assignments
+ *   { [dayId]: { morning: n, afternoon: n, evening: n } }
+ *   Slots already occupied by locked spots are subtracted from available capacity
+ *   so new spots do not overflow the per-slot cap.
  */
-export function bucketSlots(assignments, spots) {
+export function bucketSlots(assignments, spots, lockedSlotsByDay = {}) {
   const spotMap = new Map(spots.map(s => [s.id, s]));
   const FIT_ORDER = { 'evening-only': 0, 'morning-pref': 1, 'daytime': 2, 'any': 3 };
 
@@ -353,8 +381,14 @@ export function bucketSlots(assignments, spots) {
 
   const result = [];
 
-  for (const dayAssignments of Object.values(byDay)) {
-    const slotCount = { morning: 0, afternoon: 0, evening: 0 };
+  for (const [dayId, dayAssignments] of Object.entries(byDay)) {
+    // Start slot counts from locked assignments already placed on this day
+    const preLocked = lockedSlotsByDay[dayId] ?? {};
+    const slotCount = {
+      morning:   preLocked.morning   ?? 0,
+      afternoon: preLocked.afternoon ?? 0,
+      evening:   preLocked.evening   ?? 0,
+    };
 
     const sorted = [...dayAssignments].sort((a, b) => {
       const fa = getTimeFit(spotMap.get(a.spotId)).fit;
@@ -510,22 +544,69 @@ export function buildDayMeta(clusters, clusterDayMap, days, homeDays) {
 /**
  * Generate a deterministic day-by-day itinerary.
  *
- * @param {{ spots, accommodation, days, options }} params
- *   spots         — array of spot objects (lat/lng may be null or string)
- *   accommodation — { lat, lng, address }
- *   days          — array of { id, dayNumber, planDate }
- *   options       — optional overrides for DEFAULT_OPTIONS tunables
+ * @param {{ spots, accommodation, days, options, lockedAssignments }} params
+ *   spots             — array of spot objects (lat/lng may be null or string)
+ *   accommodation     — { lat, lng, address }
+ *   days              — array of { id, dayNumber, planDate }
+ *   options           — optional overrides for DEFAULT_OPTIONS tunables
+ *   lockedAssignments — already-placed spots that must be preserved;
+ *                       [{ dayId, spotId, slot, order }]
+ *                       These spots are excluded from the planning pool and
+ *                       their budget / slot counts pre-load each day's state.
  *
  * @returns {{ assignments, unplaced, dayMeta }}
- *   assignments  — [{ dayId, spotId, slot, order }]
+ *   assignments  — [{ dayId, spotId, slot, order }] — locked + new, globally ordered
  *   unplaced     — [{ spot, reason }]
  *   dayMeta      — [{ dayId, dayNumber, type: 'cluster'|'home', reason }]
  */
-export function generatePlan({ spots, accommodation, days, options = {} }) {
+export function generatePlan({ spots, accommodation, days, options = {}, lockedAssignments = [] }) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
-  // 1. Sanitise
-  const { valid, unplaced } = sanitiseSpots(spots);
+  // ── Locked-assignment pre-processing ────────────────────────────────────────
+  const lockedSpotIds = new Set(lockedAssignments.map(a => a.spotId).filter(Boolean));
+
+  // Pre-compute per-day capacity consumed by locked spots
+  const lockedBudgetByDay = Object.fromEntries(days.map(d => [d.id, 0]));
+  const lockedSlotsByDay  = Object.fromEntries(days.map(d => [d.id, { morning: 0, afternoon: 0, evening: 0 }]));
+  const lockedCountByDay  = Object.fromEntries(days.map(d => [d.id, 0]));
+
+  // Build spot lookup (all spots, including locked) for budget calculation
+  const allSpotMap = new Map(spots.map(s => [s.id, s]));
+
+  // Accommodation coordinates for home-range classification
+  const accLat = accommodation?.lat != null ? Number(accommodation.lat) : null;
+  const accLng = accommodation?.lng != null ? Number(accommodation.lng) : null;
+
+  // Days that already have locked HOME-BASE spots — these must stay as home
+  // days and cannot be repurposed as cluster days by assignClusterDays.
+  const lockedHomeDayIds = new Set();
+
+  for (const la of lockedAssignments) {
+    if (!la.dayId || !la.spotId) continue;
+    if (!(la.dayId in lockedBudgetByDay)) continue; // not one of our days
+
+    lockedCountByDay[la.dayId]++;
+    if (la.slot && la.slot in lockedSlotsByDay[la.dayId]) {
+      lockedSlotsByDay[la.dayId][la.slot]++;
+    }
+
+    const spot = allSpotMap.get(la.spotId);
+    if (spot) {
+      lockedBudgetByDay[la.dayId] += getVisitMinutes(spot);
+
+      // If the locked spot is within homeKm of accommodation, the day is a home day
+      if (accLat != null && accLng != null && spot.lat != null && spot.lng != null) {
+        const d = haversineKm(accLat, accLng, Number(spot.lat), Number(spot.lng));
+        if (d <= opts.homeKm) lockedHomeDayIds.add(la.dayId);
+      }
+    }
+  }
+
+  // Remove locked spots from the planning pool — they're already placed
+  const planningSpots = spots.filter(s => !lockedSpotIds.has(s.id));
+
+  // 1. Sanitise (planning pool only)
+  const { valid, unplaced } = sanitiseSpots(planningSpots);
 
   // 2. Cluster
   const { homeSpots, clusters } = clusterSpots(valid, accommodation, opts);
@@ -538,8 +619,8 @@ export function generatePlan({ spots, accommodation, days, options = {} }) {
     ...clusters.slice(maxClusters).flatMap(c => c.spots),
   ];
 
-  // 3. Assign cluster days
-  const clusterDayMap = assignClusterDays(activeClusters, days);
+  // 3. Assign cluster days (skip days already locked as home days)
+  const clusterDayMap = assignClusterDays(activeClusters, days, lockedHomeDayIds);
 
   // 4. Determine home days
   const clusterDayIds = new Set(clusterDayMap.values());
@@ -555,20 +636,41 @@ export function generatePlan({ spots, accommodation, days, options = {} }) {
     }
   }
 
-  // 6. Budget-pack home days
+  // 6. Budget-pack home days (pre-loaded with locked budgets)
   const { assignments: homeAssignments, unplaced: homeUnplaced } =
-    packHomeDays(allHomeSpots, homeDays, accommodation, opts);
+    packHomeDays(allHomeSpots, homeDays, accommodation, opts, {
+      preloadedBudgetByDay: lockedBudgetByDay,
+      preloadedCountByDay:  lockedCountByDay,
+    });
 
-  // 7. Bucket slots and order routes
+  // 7. Bucket slots (pre-loaded with locked slot counts) and order routes
   const rawAssignments = [...clusterAssignments, ...homeAssignments];
-  const withSlots      = bucketSlots(rawAssignments, valid);
+  const withSlots      = bucketSlots(rawAssignments, valid, lockedSlotsByDay);
   const ordered        = orderRoutes(withSlots, valid, accommodation);
 
   // 8. Day meta
   const dayMeta = buildDayMeta(activeClusters, clusterDayMap, days, homeDays);
 
+  // ── Merge locked + new assignments with globally-consistent per-day order ──
+  // Sort within each day by slot (morning → afternoon → evening) then by the
+  // order computed by orderRoutes, so locked and new spots interleave correctly.
+  const SLOT_IDX = { morning: 0, afternoon: 1, evening: 2 };
+  const byDayMerged = {};
+  for (const a of [...lockedAssignments, ...ordered]) {
+    (byDayMerged[a.dayId] ??= []).push(a);
+  }
+  const finalAssignments = [];
+  for (const dayAssigns of Object.values(byDayMerged)) {
+    dayAssigns
+      .sort((a, b) =>
+        (SLOT_IDX[a.slot] ?? 3) - (SLOT_IDX[b.slot] ?? 3) ||
+        (a.order ?? 0) - (b.order ?? 0)
+      )
+      .forEach((a, i) => finalAssignments.push({ ...a, order: i }));
+  }
+
   return {
-    assignments: ordered,
+    assignments: finalAssignments,
     unplaced:    [...unplaced, ...homeUnplaced],
     dayMeta,
   };

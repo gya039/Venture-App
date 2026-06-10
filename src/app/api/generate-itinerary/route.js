@@ -11,7 +11,7 @@ export const maxDuration = 60;
 
 export async function POST(request) {
   try {
-    const { city, days, spots, accommodation, savedSpotIds = [] } = await request.json();
+    const { city, days, spots, accommodation, savedSpotIds = [], lockedAssignments = [] } = await request.json();
 
     if (!city || !days?.length || !spots?.length) {
       return Response.json({ error: 'city, days, and spots are required' }, { status: 400 });
@@ -38,6 +38,7 @@ export async function POST(request) {
       spots: markedSpots,
       accommodation: anchor,
       days,
+      lockedAssignments,
     });
 
     // Resolve spot names for the unplaced list

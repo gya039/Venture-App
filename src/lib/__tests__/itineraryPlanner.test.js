@@ -406,3 +406,120 @@ describe('isOpenOnWeekday', () => {
     expect(isOpenOnWeekday(spot, '2025-05-18')).toBe(true);  // Sunday
   });
 });
+
+// ── Locked-assignment tests ───────────────────────────────────────────────────
+//
+// Five cases (a–e) verifying that lockedAssignments are honoured by generatePlan:
+//   a. Empty lockedAssignments → backward-compatible (same as before)
+//   b. Locked spot excluded from new assignments output
+//   c. Locked spots pre-consume day budget (fewer new spots on that day)
+//   d. Locked home-base day excluded from cluster assignment
+//   e. Locked slots pre-consume slot counts (no slot overflow beyond MAX_PER_SLOT)
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('lockedAssignments — (a) empty → backward compatible', () => {
+  it('passing [] produces identical result to omitting the param', () => {
+    const base   = generatePlan({ spots: allSpots, accommodation, days, options: testOptions });
+    const locked = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: [] });
+
+    // spotId+dayId pairs should match exactly
+    const toKey = a => `${a.dayId}:${a.spotId}`;
+    expect(locked.assignments.map(toKey).sort()).toEqual(base.assignments.map(toKey).sort());
+    expect(locked.unplaced.map(u => u.spot.id).sort()).toEqual(base.unplaced.map(u => u.spot.id).sort());
+  });
+});
+
+describe('lockedAssignments — (b) locked spot appears in output, not re-planned', () => {
+  it('locked spot is in finalAssignments exactly once; not in unplaced', () => {
+    // Lock b1 (Jazz Club Budva) on day-1 in the evening slot
+    const locked = [{ dayId: 'day-1', spotId: 'b1', slot: 'evening', order: 0 }];
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: locked });
+
+    const b1Assignments = result.assignments.filter(a => a.spotId === 'b1');
+    expect(b1Assignments).toHaveLength(1);
+    expect(b1Assignments[0].dayId).toBe('day-1');
+    expect(b1Assignments[0].slot).toBe('evening');
+
+    // b1 should not appear in unplaced
+    expect(result.unplaced.some(u => u.spot.id === 'b1')).toBe(false);
+  });
+
+  it('locked spot is not duplicated even though it is in the spots pool', () => {
+    const locked = [{ dayId: 'day-2', spotId: 'b4', slot: 'morning', order: 0 }];
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: locked });
+
+    const b4Count = result.assignments.filter(a => a.spotId === 'b4').length;
+    expect(b4Count).toBe(1); // exactly one, from the locked entry
+  });
+});
+
+describe('lockedAssignments — (c) locked spots pre-consume day budget', () => {
+  it('a fully-packed locked day receives no new spots', () => {
+    // Lock 9 spots (MAX_PER_SLOT * 3) on day-1 by crafting fake spot IDs.
+    // Use budva spots b1–b7 (7 real) + 2 fictitious; the planner uses lockedCountByDay
+    // to enforce capacity — new spots won't be added to a fully-locked day.
+    const lockedMany = ['b1','b2','b3','b4','b5','b6','b7'].map((id, i) => ({
+      dayId: 'day-1',
+      spotId: id,
+      slot: ['morning','afternoon','evening'][Math.floor(i / 3)],
+      order: i,
+    }));
+    // Also lock 2 fictitious spots (not in allSpots — not in pool, just count toward capacity)
+    lockedMany.push({ dayId: 'day-1', spotId: 'fake-1', slot: 'morning',   order: 7 });
+    lockedMany.push({ dayId: 'day-1', spotId: 'fake-2', slot: 'afternoon', order: 8 });
+
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: lockedMany });
+
+    // New assignments on day-1 should be empty (only locked spots there)
+    const newOnDay1 = result.assignments.filter(a => a.dayId === 'day-1' && !lockedMany.some(l => l.spotId === a.spotId));
+    expect(newOnDay1).toHaveLength(0);
+  });
+
+  it('partial lock leaves remaining budget for new spots', () => {
+    // Lock b1 (Nightlife, ~60 min) on day-1 — leaves ~420 min budget.
+    // Other Budva spots should still fill day-1.
+    const locked = [{ dayId: 'day-1', spotId: 'b1', slot: 'evening', order: 0 }];
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: locked });
+
+    const day1Spots = result.assignments.filter(a => a.dayId === 'day-1');
+    // Must have at least the locked b1 + at least one new spot
+    expect(day1Spots.length).toBeGreaterThan(1);
+  });
+});
+
+describe('lockedAssignments — (d) locked home-base day excluded from cluster assignment', () => {
+  it('a day with locked home-base spots is never assigned as a cluster day', () => {
+    // Lock a Budva spot (home-base, ~3km) on day-1 → day-1 must stay a home day
+    // even if the planner would otherwise prefer it for the Kotor cluster.
+    const locked = [{ dayId: 'day-1', spotId: 'b5', slot: 'morning', order: 0 }];
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: locked });
+
+    // Find day-1 meta — must be 'home', not 'cluster'
+    const day1Meta = result.dayMeta.find(m => m.dayId === 'day-1');
+    expect(day1Meta?.type).toBe('home');
+
+    // Kotor (cluster) spots must still be assigned to some day — just not day-1
+    const kotorDayIds = new Set(
+      result.assignments.filter(a => a.spotId.startsWith('k')).map(a => a.dayId)
+    );
+    expect([...kotorDayIds]).not.toContain('day-1');
+  });
+});
+
+describe('lockedAssignments — (e) locked slots pre-consume slot counts', () => {
+  it('3 locked morning spots on a day prevent new spots from overflowing morning', () => {
+    // Lock 3 Budva spots into morning on day-2 (MAX_PER_SLOT = 3).
+    // The planner should NOT assign a 4th spot to morning on day-2.
+    const locked = [
+      { dayId: 'day-2', spotId: 'b1', slot: 'morning', order: 0 },
+      { dayId: 'day-2', spotId: 'b2', slot: 'morning', order: 1 },
+      { dayId: 'day-2', spotId: 'b4', slot: 'morning', order: 2 },
+    ];
+    const result = generatePlan({ spots: allSpots, accommodation, days, options: testOptions, lockedAssignments: locked });
+
+    const day2Morning = result.assignments.filter(a => a.dayId === 'day-2' && a.slot === 'morning');
+    // Only the 3 locked spots should be in morning; no new spots added to that slot
+    expect(day2Morning.length).toBe(3);
+    expect(day2Morning.map(a => a.spotId).sort()).toEqual(['b1', 'b2', 'b4'].sort());
+  });
+});

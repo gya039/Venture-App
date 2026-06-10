@@ -2318,6 +2318,24 @@ export default function DaysBuilder({
                 setGenNotice(null);
                 try {
                   const selectedDays = days.filter((d) => genSelectedDayIds.has(d.id));
+
+                  // Collect spots already placed on the selected days so the planner
+                  // can treat them as locked anchors and plan around their capacity.
+                  // Events (isEvent: true) are excluded — they use spotId: null in the
+                  // DB and aren't part of the citySpots pool the planner works with.
+                  const lockedAssignments = selectedDays.flatMap((day) =>
+                    SLOTS.flatMap((slot) =>
+                      (allSlotsRef.current[day.id]?.[slot] ?? [])
+                        .filter((sp) => sp.id && !sp.isEvent)
+                        .map((sp) => ({
+                          dayId:  day.id,
+                          spotId: sp.id,
+                          slot,
+                          order:  sp.sortOrder ?? 0,
+                        }))
+                    )
+                  );
+
                   const res = await fetch('/api/generate-itinerary', {
                     method:  'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2327,6 +2345,7 @@ export default function DaysBuilder({
                       spots,
                       accommodation: resolvedAccommodation,
                       savedSpotIds: [...savedIds], // starred spots get priority in the AI prompt
+                      lockedAssignments,           // currently-placed spots — planner routes around these
                     }),
                   });
                   if (!res.ok) {
