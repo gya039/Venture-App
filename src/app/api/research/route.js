@@ -710,20 +710,39 @@ function stripPostcode(addr) {
 }
 
 /**
+ * Categories that represent a geographic area rather than a specific venue.
+ * Only these are allowed to resolve to neighborhood/locality Mapbox features.
+ * All other categories (Art, Museum, Bar, Café, Park, …) must resolve to POI
+ * or address results so that POI names containing a place name (e.g. "The
+ * Whitworth Art Gallery") are never assigned the coords of the place itself.
+ */
+const AREA_CATEGORIES = new Set(['Neighbourhood']);
+
+function isAreaCategory(category) {
+  return AREA_CATEGORIES.has(category);
+}
+
+/**
  * Geocode a single spot.
  *
  * Strategy (most → least precise):
- *   1. Name alone as POI (country-pinned) — Mapbox scores this highest; no postcode confusion
- *   2. Name + city as POI (country-pinned)
- *   3. Address (postcode stripped) + city (country-pinned)
- *   4. Address (postcode stripped) alone
- *   5. Name + neighbourhood + city
- *   6. Name + city with broad types (final fallback, no country filter)
- *   7. No bbox, country pinned — proximity + distKm guard only
- *   8. No bbox, no country — widest possible net
- *   9. Neighbourhood as query anchor
+ *   1. Address (postcode stripped) — runs first when present; a real street
+ *      address is more precise than any name-based guess and prevents place-name
+ *      collisions (e.g. "Whitworth Art Gallery" on Oxford Road vs. the town of
+ *      Whitworth near Rochdale).
+ *   2. Name as POI only (country-pinned, bbox)
+ *   3. Name + city as POI only (country-pinned, bbox)
+ *   4. Name + neighbourhood + city (poi,address)
+ *   5. Name + city — broad types, no country filter
+ *   6. Name + city — country pinned, no bbox
+ *   7. Name + city — no country, no bbox (widest POI net)
+ *   8. Neighbourhood field as query anchor (neighborhood,locality,place)
+ *   9. Area-gated locality fallback — only for spots whose category is an
+ *      explicit geographic area (Neighbourhood).  Resolves district/docklands
+ *      names like "Salford Quays" that are indexed by Mapbox as neighborhoods
+ *      rather than POIs.
  */
-async function geocodeSpot(spot, city, cityCenter, token) {
+export async function geocodeSpot(spot, city, cityCenter, token) {
   // Uses module-level GEOCODE_SANITY_KM — change that constant to tune for all modes.
   const country = cityCenter.countryCode ?? null; // e.g. "pt"
   let anyFeaturesFound = false; // true if Mapbox returned features on any strategy
@@ -752,8 +771,6 @@ async function geocodeSpot(spot, city, cityCenter, token) {
 
     anyFeaturesFound = true; // Mapbox returned a candidate — failure (if any) is a sanity rejection
     const [lng, lat] = d.features[0].center;
-    // Sanity check: reject results placed outside GEOCODE_SANITY_KM of city centre.
-    // Strategy 2 ("{name}, {city}") serves as the mandatory retry for failed strategy 1.
     if (!passesSanity({ lat, lng }, cityCenter)) return null;
     return { lat, lng };
   };
@@ -761,20 +778,8 @@ async function geocodeSpot(spot, city, cityCenter, token) {
   try {
     let coords = null;
 
-    // 1. Name as POI or geographic area (neighborhood/locality).
-    //    Adding neighborhood,locality alongside poi is the key fix for area/district
-    //    names like "Salford Quays", "Northern Quarter", "Schwabing" — these are
-    //    indexed by Mapbox as neighborhoods, not POIs.  Without this, strategy 1
-    //    asked only for poi, found a random same-named venue in the wrong location,
-    //    and proximity bias could not overcome the higher relevance score of an
-    //    exact POI-name match over a distant neighborhood-type result.
-    coords = await tryQuery(spot.name, 'poi,neighborhood,locality');
-
-    // 2. Name + city — same type expansion for the explicit-city retry
-    if (!coords) {
-      coords = await tryQuery(`${spot.name}, ${city}`, 'poi,neighborhood,locality');
-    }
-
+    // 1. Address first — a concrete address beats any name-based guess and prevents
+    //    locality collisions for POIs whose name contains a place name.
     if (spot.address) {
       const addrClean = stripPostcode(spot.address);
       const addrLower = addrClean.toLowerCase();
@@ -783,48 +788,57 @@ async function geocodeSpot(spot, city, cityCenter, token) {
         addrLower.includes(cityLower) ||
         addrLower.split(/[\s,]+/).some((w) => cityLower.startsWith(w) && w.length > 3);
 
-      // 3. Address (no postcode) + city
+      coords = await tryQuery(
+        addrHasCity ? addrClean : `${addrClean}, ${city}`,
+        'address,poi'
+      );
+      // If the city-suffixed form failed and we haven't yet tried the bare address, try it.
       if (!coords && !addrHasCity) {
-        coords = await tryQuery(`${addrClean}, ${city}`, 'address,poi');
-      }
-
-      // 4. Address (no postcode) alone
-      if (!coords) {
         coords = await tryQuery(addrClean, 'address,poi');
       }
     }
 
-    // 5. Name + neighbourhood + city
+    // 2. Name as POI only — never neighborhood/locality here; prevents place-name
+    //    collisions such as "The Whitworth Art Gallery" → town of Whitworth.
+    if (!coords) coords = await tryQuery(spot.name, 'poi');
+
+    // 3. Name + city as POI only
+    if (!coords) coords = await tryQuery(`${spot.name}, ${city}`, 'poi');
+
+    // 4. Name + neighbourhood + city
     if (!coords && spot.neighbourhood) {
       coords = await tryQuery(`${spot.name}, ${spot.neighbourhood}, ${city}`, 'poi,address');
     }
 
-    // 6. Final fallback — no country filter, broad types
-    if (!coords) {
-      coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', false);
-    }
+    // 5. Name + city — broad types, no country filter
+    if (!coords) coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', false);
 
-    // 7. No bbox, country pinned — proximity + distKm guard only
-    if (!coords) {
-      coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', true, false);
-    }
+    // 6. Name + city — country pinned, no bbox
+    if (!coords) coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', true, false);
 
-    // 8. No bbox, no country — widest possible net (never use 'place' type — it
-    //    returns the city itself and causes all failed spots to stack on one pin)
-    if (!coords) {
-      coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', false, false);
-    }
+    // 7. Name + city — no country, no bbox (widest POI net; never use 'place' type —
+    //    it returns the city itself and causes all failed spots to stack on one pin)
+    if (!coords) coords = await tryQuery(`${spot.name}, ${city}`, 'poi,address', false, false);
 
-    // 9. Neighbourhood as the query anchor — helps when the POI name isn't indexed
+    // 8. Neighbourhood field as query anchor — helps when the POI name isn't indexed
     if (!coords && spot.neighbourhood) {
       coords = await tryQuery(`${spot.neighbourhood}, ${city}`, 'neighborhood,locality,place', false, false);
+    }
+
+    // 9. Area-gated locality fallback — ONLY for spots whose category is an explicit
+    //    geographic area (e.g. Neighbourhood).  Resolves docklands/district names
+    //    (Salford Quays, Northern Quarter) that Mapbox indexes as neighborhoods, not POIs.
+    //    Non-area categories (Art, Museum, Bar, Café, …) must never reach this step.
+    if (!coords && isAreaCategory(spot.category)) {
+      coords = await tryQuery(spot.name, 'neighborhood,locality');
+      if (!coords) coords = await tryQuery(`${spot.name}, ${city}`, 'neighborhood,locality', false, false);
     }
 
     if (coords) {
       return { ...spot, lat: coords.lat, lng: coords.lng, coordsMissing: false, geocodeSource: 'mapbox' };
     }
 
-    // All 9 strategies exhausted.  Report why: either Mapbox found no features at all,
+    // All strategies exhausted.  Report why: either Mapbox found no features at all,
     // or it returned features that all fell outside the GEOCODE_SANITY_KM radius.
     const failReason = anyFeaturesFound ? 'sanity_rejected' : 'no_features';
     console.warn(

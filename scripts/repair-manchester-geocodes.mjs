@@ -181,7 +181,24 @@ function passesSanity(coords, centre) {
   return distKm(coords.lat, coords.lng, centre.lat, centre.lng) <= SANITY_KM;
 }
 
-// ── Mapbox — corrected geocode cascade ────────────────────────────────────────
+// ── Mapbox — geocode cascade (mirrors route.js) ───────────────────────────────
+
+const AREA_CATEGORIES = new Set(['Neighbourhood']);
+
+function isAreaCategory(category) {
+  return AREA_CATEGORIES.has(category);
+}
+
+function stripPostcode(addr) {
+  return addr
+    .replace(/\b[A-Z]{1,2}\d{1,2}[A-Z]?\s*\d[A-Z]{2}\b/gi, '') // UK: M15 6ER
+    .replace(/\b\d{5}(?:-\d{4})?\b/g, '')                         // US/DE/FR: 90210
+    .replace(/\b\d{4,5}\b(?=\s*,|\s*$)/g, '')                     // BE/CH/PT
+    .replace(/,\s*,+/g, ',')
+    .replace(/,\s*$/, '')
+    .trim();
+}
+
 async function getCityCenter(city, token) {
   const res = await fetch(
     `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(city)}.json` +
@@ -196,13 +213,12 @@ async function getCityCenter(city, token) {
   return { lat, lng, countryCode };
 }
 
-async function geocodeWithCorrectTypes(spot, cityName, centre, token) {
+async function geocodeWithNewCascade(spot, cityName, centre, token) {
   const country = centre.countryCode ?? null;
 
   const tryQuery = async (query, types, useCountry = true, useBbox = true) => {
     const pad  = 0.35;
     const bbox = [centre.lng - pad, centre.lat - pad, centre.lng + pad, centre.lat + pad].join(',');
-    // proximity is ALWAYS passed (already was in route.js; adding neighbourhood,locality is the fix)
     let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json` +
               `?proximity=${centre.lng},${centre.lat}&types=${types}&limit=1&access_token=${token}`;
     if (useBbox)               url += `&bbox=${bbox}`;
@@ -217,22 +233,33 @@ async function geocodeWithCorrectTypes(spot, cityName, centre, token) {
     return { lat, lng, type: d.features[0].place_type?.[0] ?? '?' };
   };
 
-  // Strategy 1: name — NOW includes neighborhood,locality (the fix)
-  let c = await tryQuery(spot.name, 'poi,neighborhood,locality');
-  // Strategy 2: name + city — same type expansion
-  if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'poi,neighborhood,locality');
-  // Strategies 3–8: unchanged from route.js cascade
-  if (!c && spot.address) {
-    const addrClean = spot.address.replace(/\b\d{4,5}(?:-\d{3,4})?\b/g, '').trim();
+  let c = null;
+
+  // 1. Address first
+  if (spot.address) {
+    const addrClean  = stripPostcode(spot.address);
     const addrHasCity = addrClean.toLowerCase().includes(cityName.toLowerCase());
-    if (!addrHasCity) c = await tryQuery(`${addrClean}, ${cityName}`, 'address,poi');
-    if (!c)           c = await tryQuery(addrClean, 'address,poi');
+    c = await tryQuery(addrHasCity ? addrClean : `${addrClean}, ${cityName}`, 'address,poi');
+    if (!c && !addrHasCity) c = await tryQuery(addrClean, 'address,poi');
   }
+  // 2. Name as POI only (no locality — prevents place-name collision)
+  if (!c) c = await tryQuery(spot.name, 'poi');
+  // 3. Name + city as POI only
+  if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'poi');
+  // 4. Name + neighbourhood + city
   if (!c && spot.neighbourhood) c = await tryQuery(`${spot.name}, ${spot.neighbourhood}, ${cityName}`, 'poi,address');
+  // 5-7. Broad fallbacks (poi,address)
   if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'poi,address', false);
   if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'poi,address', true, false);
   if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'poi,address', false, false);
+  // 8. Neighbourhood field anchor
   if (!c && spot.neighbourhood) c = await tryQuery(`${spot.neighbourhood}, ${cityName}`, 'neighborhood,locality,place', false, false);
+  // 9. Area-gated locality fallback (Neighbourhood category only)
+  if (!c && isAreaCategory(spot.category)) {
+    c = await tryQuery(spot.name, 'neighborhood,locality');
+    if (!c) c = await tryQuery(`${spot.name}, ${cityName}`, 'neighborhood,locality', false, false);
+  }
+
   return c ?? null;
 }
 
@@ -287,15 +314,17 @@ async function main() {
       : null,
   })).sort((a, b) => (b._storedKm ?? -1) - (a._storedKm ?? -1));
 
-  // Priority set: top 10 + any spot named "Salford Quays"
+  // Priority set: top 10 + named spots of interest
   const prioritySet = new Set(withDist.slice(0, 10).map(s => s._id));
   for (const s of withDist) {
-    if (s.name?.toLowerCase().includes('salford quays')) prioritySet.add(s._id);
+    const n = s.name?.toLowerCase() ?? '';
+    if (n.includes('salford quays') || n.includes('chorlton water park') ||
+        n.includes('whitworth'))      prioritySet.add(s._id);
   }
 
   // 5. Re-geocode and report
   console.log(hr);
-  console.log('Re-geocoding top 10 by stored distance + Salford Quays (corrected type list)');
+  console.log('Re-geocoding top 10 by stored distance + named spots (new cascade: address-first, poi-only names, gated area fallback)');
   console.log(hr);
   const nameW = 40, distW = 22;
   console.log(
@@ -314,7 +343,7 @@ async function main() {
     if (reqCount > 0) await new Promise(r => setTimeout(r, 400)); // ~2.5 req/s
     reqCount++;
 
-    const reGeo = await geocodeWithCorrectTypes(spot, CITY_NAME, centre, MAPBOX_TOKEN);
+    const reGeo = await geocodeWithNewCascade(spot, CITY_NAME, centre, MAPBOX_TOKEN);
 
     const storedCell = spot._storedKm != null
       ? `${spot._storedLat?.toFixed(4)},${spot._storedLng?.toFixed(4)} (${spot._storedKm.toFixed(1)})`
