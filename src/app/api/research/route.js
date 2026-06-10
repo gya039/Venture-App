@@ -10,6 +10,19 @@ export const maxDuration = 60;
 import { normaliseCategory } from '@/lib/categories';
 
 // ---------------------------------------------------------------------------
+// Geocode sanity threshold
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum distance (km) a geocoded result may be from the city centre and still
+ * be accepted.  Generous enough to include genuine day-trip spots (lakes,
+ * villages, viewpoints 20–30 km out) while rejecting clear misplacements.
+ *
+ * Exported so the audit script and unit tests can reference the same value.
+ */
+export const GEOCODE_SANITY_KM = 35;
+
+// ---------------------------------------------------------------------------
 // Quality gate — drops spots the model itself rates as low-confidence
 // Tune this constant if the gate is too aggressive or too permissive.
 // ---------------------------------------------------------------------------
@@ -655,11 +668,25 @@ async function getCityCenter(city, token) {
   return { lat, lng, countryCode };
 }
 
-/** Approximate distance in km between two lat/lng points */
-function distKm(lat1, lng1, lat2, lng2) {
+/**
+ * Approximate distance in km between two lat/lng points (equirectangular).
+ * Exported so the audit script and sanity-check unit tests can use it directly.
+ */
+export function distKm(lat1, lng1, lat2, lng2) {
   const dLat = (lat2 - lat1) * 111;
   const dLng = (lng2 - lng1) * 111 * Math.cos(((lat1 + lat2) / 2) * (Math.PI / 180));
   return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+/**
+ * Returns true when geocoded coords are within GEOCODE_SANITY_KM of the city
+ * centre; false means the result should be retried or nulled out.
+ * Pure function — no I/O, safe to unit-test without mocking Mapbox.
+ */
+export function passesSanity(coords, cityCenter, thresholdKm = GEOCODE_SANITY_KM) {
+  if (!coords?.lat || !coords?.lng) return false;
+  if (!cityCenter?.lat || !cityCenter?.lng) return true; // no centre to check against
+  return distKm(coords.lat, coords.lng, cityCenter.lat, cityCenter.lng) <= thresholdKm;
 }
 
 /**
@@ -697,8 +724,8 @@ function stripPostcode(addr) {
  *   9. Neighbourhood as query anchor
  */
 async function geocodeSpot(spot, city, cityCenter, token) {
-  const MAX_DIST_KM = 35;
-  const country     = cityCenter.countryCode ?? null; // e.g. "pt"
+  // Uses module-level GEOCODE_SANITY_KM — change that constant to tune for all modes.
+  const country = cityCenter.countryCode ?? null; // e.g. "pt"
 
   const tryQuery = async (query, types = 'poi,address', useCountry = true, useBbox = true) => {
     const pad  = 0.35; // ~39 km — wide enough to cover large metro areas like Tokyo
@@ -723,7 +750,9 @@ async function geocodeSpot(spot, city, cityCenter, token) {
     if (!d.features?.length) return null;
 
     const [lng, lat] = d.features[0].center;
-    if (distKm(lat, lng, cityCenter.lat, cityCenter.lng) > MAX_DIST_KM) return null;
+    // Sanity check: reject results placed outside GEOCODE_SANITY_KM of city centre.
+    // Strategy 2 ("{name}, {city}") serves as the mandatory retry for failed strategy 1.
+    if (!passesSanity({ lat, lng }, cityCenter)) return null;
     return { lat, lng };
   };
 
@@ -786,6 +815,11 @@ async function geocodeSpot(spot, city, cityCenter, token) {
     if (coords) {
       return { ...spot, lat: coords.lat, lng: coords.lng, coordsMissing: false, geocodeSource: 'mapbox' };
     }
+
+    // All 9 strategies exhausted — every result either had no features or failed the
+    // GEOCODE_SANITY_KM check.  The spot is stored with coordsMissing:true so the planner
+    // routes it to unplaced with reason "no map location".
+    console.warn(`[geocodeSpot] all strategies failed sanity check for "${spot.name}" in ${city}`);
   } catch { /* fall through */ }
 
   return { ...spot, coordsMissing: true };
