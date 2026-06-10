@@ -759,12 +759,18 @@ async function geocodeSpot(spot, city, cityCenter, token) {
   try {
     let coords = null;
 
-    // 1. POI name alone — cleanest query, highest Mapbox relevance score
-    coords = await tryQuery(spot.name, 'poi');
+    // 1. Name as POI or geographic area (neighborhood/locality).
+    //    Adding neighborhood,locality alongside poi is the key fix for area/district
+    //    names like "Salford Quays", "Northern Quarter", "Schwabing" — these are
+    //    indexed by Mapbox as neighborhoods, not POIs.  Without this, strategy 1
+    //    asked only for poi, found a random same-named venue in the wrong location,
+    //    and proximity bias could not overcome the higher relevance score of an
+    //    exact POI-name match over a distant neighborhood-type result.
+    coords = await tryQuery(spot.name, 'poi,neighborhood,locality');
 
-    // 2. POI name + city
+    // 2. Name + city — same type expansion for the explicit-city retry
     if (!coords) {
-      coords = await tryQuery(`${spot.name}, ${city}`, 'poi');
+      coords = await tryQuery(`${spot.name}, ${city}`, 'poi,neighborhood,locality');
     }
 
     if (spot.address) {
