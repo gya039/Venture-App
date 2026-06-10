@@ -664,7 +664,7 @@ function EventSuggestionCard({ event, onAdd }) {
 }
 
 /* ── DaySection (collapsible day card) ────────────────────────────────────── */
-function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null, city = null, onApplyOrder = null }) {
+function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, onQuickAdd, events = [], onAddEvent, dayColor = '#f59e0b', accommodation = null, city = null, onApplyOrder = null, planReason = null }) {
   const [open,          setOpen]          = useState(true);
   const [eventsOpen,    setEventsOpen]    = useState(false);
   const [suggDismissed, setSuggDismissed] = useState(false);
@@ -760,6 +760,13 @@ function DaySection({ day, slots, onRemove, isTouch, placingSpot, onPlaceHere, o
       {/* Body */}
       {open && (
         <div style={{ padding: '14px 14px 10px' }}>
+
+          {/* ── Day plan reason (from generate) ────────────────────────── */}
+          {planReason && (
+            <p style={{ margin: '0 0 10px', fontSize: '0.67rem', color: 'var(--muted)', lineHeight: 1.5, fontStyle: 'italic' }}>
+              {planReason}
+            </p>
+          )}
 
           {/* ── Route suggestion banner ─────────────────────────────────── */}
           {showSuggestion && !isSameOrder && (
@@ -1127,6 +1134,8 @@ export default function DaysBuilder({
   const [genSelectedDayIds, setGenSelectedDayIds] = useState(new Set());
   const [generating,        setGenerating]        = useState(false);
   const [genError,          setGenError]          = useState(null);
+  const [dayMeta,           setDayMeta]           = useState([]);   // [{dayId, reason, type}] from last generate
+  const [genNotice,         setGenNotice]         = useState(null); // amber notice after generation
 
   /* ── Mobile panel toggle ('picker' | 'planner') ─────────────────────────── */
   const [mobilePanel, setMobilePanel] = useState('planner');
@@ -1970,6 +1979,26 @@ export default function DaysBuilder({
           {/* ── Day list view ── */}
           {planView === 'list' && (
             <div style={{ flex: 1, overflowY: 'auto', padding: '16px' }}>
+
+              {/* ── Unplaced spots notice (shown after generate) ─────────────── */}
+              {genNotice && (
+                <div style={{
+                  marginBottom: 12, padding: '10px 14px', borderRadius: 8,
+                  display: 'flex', alignItems: 'flex-start', gap: 10,
+                  background: 'color-mix(in oklch, var(--accent) 8%, var(--card))',
+                  border: '1px solid color-mix(in oklch, var(--accent) 30%, transparent)',
+                }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--ink)', lineHeight: 1.5, flex: 1 }}>
+                    {genNotice}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setGenNotice(null)}
+                    style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, padding: '0 2px', flexShrink: 0 }}
+                  >×</button>
+                </div>
+              )}
+
               {days.map((day, dayIndex) => (
                 <DaySection
                   key={day.id}
@@ -1986,6 +2015,7 @@ export default function DaysBuilder({
                   city={city}
                   accommodation={resolvedAccommodation}
                   onApplyOrder={handleApplyOrder}
+                  planReason={dayMeta.find(m => m.dayId === day.id)?.reason ?? null}
                 />
               ))}
 
@@ -2283,6 +2313,7 @@ export default function DaysBuilder({
                 if (genSelectedDayIds.size === 0 || spots.length === 0 || generating) return;
                 setGenerating(true);
                 setGenError(null);
+                setGenNotice(null);
                 try {
                   const selectedDays = days.filter((d) => genSelectedDayIds.has(d.id));
                   const res = await fetch('/api/generate-itinerary', {
@@ -2300,8 +2331,8 @@ export default function DaysBuilder({
                     const body = await res.json().catch(() => ({}));
                     throw new Error(body.error ?? `Generation failed (${res.status})`);
                   }
-                  const { assignments } = await res.json();
-                  if (!assignments?.length) throw new Error('AI returned no assignments. Try with more spots saved.');
+                  const { assignments, assignedCount, unplaced, dayMeta: meta } = await res.json();
+                  if (!assignments?.length) throw new Error('Planner returned no assignments. Try adding more spots.');
 
                   // Snapshot currently-placed spot IDs so we don't double-add
                   const currentlyPlacedIds = new Set(
@@ -2322,6 +2353,22 @@ export default function DaysBuilder({
                       applied++;
                     } catch { /* skip */ }
                   }
+
+                  // Store dayMeta for reason lines in each day card
+                  setDayMeta(meta ?? []);
+
+                  // Build unplaced notice if any spots couldn't be placed
+                  if (unplaced?.length) {
+                    const noMapCount  = unplaced.filter(u => u.reason === 'no map location').length;
+                    const otherCount  = unplaced.length - noMapCount;
+                    const parts = [];
+                    if (otherCount  > 0) parts.push(`${otherCount} didn't fit — they're still in your picker`);
+                    if (noMapCount  > 0) parts.push(`${noMapCount} couldn't be pinned on the map`);
+                    setGenNotice(`Planned ${assignedCount} spots. ${parts.join('; ')}.`);
+                  } else {
+                    setGenNotice(null);
+                  }
+
                   onRefetch();
                   setGenModalOpen(false);
                   toast?.success?.(`✨ ${applied} spots added across ${genSelectedDayIds.size} day${genSelectedDayIds.size !== 1 ? 's' : ''}!`);
