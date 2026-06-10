@@ -89,6 +89,7 @@ function CityPreviewContent() {
   const [refreshCount,   setRefreshCount]   = useState(null); // null = loading
   const [isRefreshing,   setIsRefreshing]   = useState(false);
   const [refreshStatus,  setRefreshStatus]  = useState('');
+  const [unlocated,      setUnlocated]      = useState([]);
 
   /* ── Filters ── */
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,7 +140,10 @@ function CityPreviewContent() {
       await runResearch(cityName, [], undefined, true, {
         onSpot:    (spot) => { newSpots.push(spot); setSpots([...newSpots]); },
         onStatus:  (msg)  => setRefreshStatus(msg),
-        onSummary: (s)    => setRefreshStatus(`${s.geocoded} spots mapped`),
+        onSummary: (s)    => {
+          setRefreshStatus(`${s.geocoded} spots mapped`);
+          if (s.unlocated?.length > 0) setUnlocated(s.unlocated);
+        },
       });
       await incrementPreviewRefresh(user.uid, cityName);
       setRefreshCount(c => (c ?? 0) + 1);
@@ -364,6 +368,30 @@ function CityPreviewContent() {
                   ↻ Research refreshed
                 </span>
               )}
+            </div>
+          )}
+
+          {/* Unlocated notice — shown after a refresh if any spots couldn't be geocoded */}
+          {unlocated.length > 0 && (
+            <div style={{
+              flexShrink: 0, padding: '8px 14px',
+              borderBottom: '1px solid var(--line)',
+              background: 'var(--paper-2)',
+              display: 'flex', alignItems: 'flex-start', gap: 8,
+            }}>
+              <p style={{ flex: 1, fontSize: '0.72rem', color: 'var(--text-secondary)', lineHeight: 1.5, margin: 0 }}>
+                Found {spots.length} spot{spots.length !== 1 ? 's' : ''}.{' '}
+                {unlocated.length} couldn't be placed on the map and weren't saved:{' '}
+                {unlocated.map((u) => u.name).join(', ')}.
+              </p>
+              <button
+                type="button"
+                onClick={() => setUnlocated([])}
+                style={{
+                  background: 'none', border: 'none', padding: 0, flexShrink: 0,
+                  color: 'var(--muted)', cursor: 'pointer', fontSize: 15, lineHeight: 1,
+                }}
+              >×</button>
             </div>
           )}
 

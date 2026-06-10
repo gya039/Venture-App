@@ -477,7 +477,8 @@ export default function TripDetailPage() {
           onSummary: (s)    => toast.info?.(
             `${s.geocoded} spots mapped` +
             (s.qualityDropped > 0 ? ` · ${s.qualityDropped} quality-filtered` : '') +
-            (s.dropped > 0 ? ` · ${s.dropped} ungeocodeable` : '')
+            (s.geocodeSanityRejected > 0 ? ` · ${s.geocodeSanityRejected} placed outside city` : '') +
+            (s.geocodeNoResults > 0 ? ` · ${s.geocodeNoResults} not found on map` : '')
           ),
         },
       );

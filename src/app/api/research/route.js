@@ -726,6 +726,7 @@ function stripPostcode(addr) {
 async function geocodeSpot(spot, city, cityCenter, token) {
   // Uses module-level GEOCODE_SANITY_KM — change that constant to tune for all modes.
   const country = cityCenter.countryCode ?? null; // e.g. "pt"
+  let anyFeaturesFound = false; // true if Mapbox returned features on any strategy
 
   const tryQuery = async (query, types = 'poi,address', useCountry = true, useBbox = true) => {
     const pad  = 0.35; // ~39 km — wide enough to cover large metro areas like Tokyo
@@ -749,6 +750,7 @@ async function geocodeSpot(spot, city, cityCenter, token) {
     const d = await r.json();
     if (!d.features?.length) return null;
 
+    anyFeaturesFound = true; // Mapbox returned a candidate — failure (if any) is a sanity rejection
     const [lng, lat] = d.features[0].center;
     // Sanity check: reject results placed outside GEOCODE_SANITY_KM of city centre.
     // Strategy 2 ("{name}, {city}") serves as the mandatory retry for failed strategy 1.
@@ -822,13 +824,19 @@ async function geocodeSpot(spot, city, cityCenter, token) {
       return { ...spot, lat: coords.lat, lng: coords.lng, coordsMissing: false, geocodeSource: 'mapbox' };
     }
 
-    // All 9 strategies exhausted — every result either had no features or failed the
-    // GEOCODE_SANITY_KM check.  The spot is stored with coordsMissing:true so the planner
-    // routes it to unplaced with reason "no map location".
-    console.warn(`[geocodeSpot] all strategies failed sanity check for "${spot.name}" in ${city}`);
+    // All 9 strategies exhausted.  Report why: either Mapbox found no features at all,
+    // or it returned features that all fell outside the GEOCODE_SANITY_KM radius.
+    const failReason = anyFeaturesFound ? 'sanity_rejected' : 'no_features';
+    console.warn(
+      `[geocodeSpot] "${spot.name}" in ${city}: ` +
+      (anyFeaturesFound
+        ? `all results outside ${GEOCODE_SANITY_KM} km sanity gate`
+        : 'no Mapbox features on any strategy')
+    );
+    return { ...spot, coordsMissing: true, geocodeFailReason: failReason };
   } catch { /* fall through */ }
 
-  return { ...spot, coordsMissing: true };
+  return { ...spot, coordsMissing: true, geocodeFailReason: 'error' };
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,12 +1019,15 @@ export async function POST(request) {
         // ── Shared cross-pass state ───────────────────────────────────────────
         const seenNames       = [];   // accumulated names for live dedup; first-version wins
         const geocodePromises = [];   // collected so we can await all at the end
-        let sent             = 0;
-        let skipped          = 0;
-        let totalGenerated   = 0;
-        let qualityDropped   = 0;
-        let dedupDropped     = 0;
-        let completedPasses  = 0;
+        const unlocated       = [];   // spots that failed geocoding: [{ name, reason }]
+        let sent                  = 0;
+        let skipped               = 0;
+        let geocodeNoResults      = 0; // Mapbox returned no features on any strategy
+        let geocodeSanityRejected = 0; // features returned but all outside sanity radius
+        let totalGenerated        = 0;
+        let qualityDropped        = 0;
+        let dedupDropped          = 0;
+        let completedPasses       = 0;
 
         // Bounded geocoding pool (max 5 concurrent Mapbox requests)
         const geoPool = new BoundedQueue(5);
@@ -1053,9 +1064,15 @@ export async function POST(request) {
             geoPool.add(async () => {
               const geocoded = (token && cityCenter)
                 ? await geocodeSpot(clean, city, cityCenter, token)
-                : { ...clean, coordsMissing: true };
+                : { ...clean, coordsMissing: true, geocodeFailReason: 'no_token' };
               if (!geocoded.coordsMissing) { send('spot', geocoded); sent++; }
-              else skipped++;
+              else {
+                const reason = geocoded.geocodeFailReason ?? 'unknown';
+                unlocated.push({ name: clean.name, reason });
+                if (reason === 'sanity_rejected') geocodeSanityRejected++;
+                else geocodeNoResults++;
+                skipped++;
+              }
             })
           );
         };
@@ -1108,13 +1125,17 @@ export async function POST(request) {
           console.log(
             `[research/funnel] ${city} TOTALS: ` +
             `generated=${totalGenerated} | qualityDropped=${qualityDropped} | dedupDropped=${dedupDropped} | ` +
-            `geocodeQueued=${seenNames.length} | geocodeOK=${sent} | geocodeFail=${skipped}`
+            `geocodeQueued=${seenNames.length} | geocodeOK=${sent} | ` +
+            `geocodeNoResults=${geocodeNoResults} | geocodeSanityRejected=${geocodeSanityRejected}`
           );
           send('summary', {
-            generated:      totalGenerated,
-            unique:         seenNames.length,
-            geocoded:       sent,
-            dropped:        skipped,
+            generated:            totalGenerated,
+            unique:               seenNames.length,
+            geocoded:             sent,
+            dropped:              skipped,
+            geocodeNoResults,
+            geocodeSanityRejected,
+            unlocated,
             qualityDropped,
             dedupDropped,
             city,
