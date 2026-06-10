@@ -1487,20 +1487,22 @@ export default function DaysBuilder({
   );
 
   const pickerSpots = useMemo(() => {
+    // When a day is soloed on the map, source directly from allSlots_ — the exact
+    // same data the map markers use — so events and any non-citySpot placed items
+    // are included and the sidebar count always matches the map legend count.
+    if (planView === 'map' && mapFilterDays !== null && mapFilterDays.size < days.length) {
+      const s = [...mapFilterDays].flatMap(dayId =>
+        SLOTS.flatMap(sl => allSlots_[dayId]?.[sl] ?? [])
+      ).filter(sp => sp.lat && sp.lng && !sp.coordsMissing);
+      return [...s].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
+    }
     let s = pickerBase;
     if (pickerCategories_.size > 0) s = s.filter(sp => pickerCategories_.has(sp.category ?? ''));
     if (pickerMinScore > 0) s = s.filter(sp => (sp.hiddennessScore ?? 1) >= pickerMinScore);
     const q = pickerSearch.toLowerCase().trim();
     if (q) s = s.filter(sp => sp.name?.toLowerCase().includes(q) || sp.category?.toLowerCase().includes(q));
-    // When the map is in a day-filtered view, only show spots placed in the visible day(s)
-    if (planView === 'map' && mapFilterDays !== null && mapFilterDays.size < days.length) {
-      s = s.filter(sp => {
-        const info = placedInfo[sp.id];
-        return info && mapFilterDays.has(info.dayId);
-      });
-    }
     return [...s].sort((a, b) => (b.hiddennessScore ?? 0) - (a.hiddennessScore ?? 0));
-  }, [pickerBase, pickerCategories_, pickerMinScore, pickerSearch, planView, mapFilterDays, placedInfo, days.length]);
+  }, [pickerBase, pickerCategories_, pickerMinScore, pickerSearch, planView, mapFilterDays, allSlots_, days.length]);
 
   /* ── Totals ─────────────────────────────────────────────────────────────── */
   const totalSpots = useMemo(() =>
