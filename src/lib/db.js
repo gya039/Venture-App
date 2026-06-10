@@ -34,6 +34,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { normaliseCategory } from './categories';
+import { planSpotWrites } from './spotWrites';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -321,42 +322,69 @@ export async function getCachedSpots(city) {
  *
  *  force=false (default): additive — only writes spots whose names are not
  *    already present in Firestore, preserving existing cached research.
- *  force=true: destructive — deletes all existing spots first, then writes
- *    the full incoming array (used on explicit "Refresh" re-research). */
+ *  force=true: merge-upsert — updates existing docs in-place (same ID) and
+ *    creates new docs for new names.  Existing docs absent from the incoming
+ *    set are left untouched.  No docs are ever deleted during a refresh, so
+ *    all external references (dayPlanSpots, savedSpots, reviews) remain valid. */
 export async function cacheSpots(city, spots, force = false) {
   city = city.toLowerCase();
   const spotsRef = collection(db, 'citySpots', city, 'spots');
 
-  let spotsToWrite = spots;
-  if (!force) {
-    // Additive: read existing names, skip spots already present
-    const existingSnaps = await getDocsFromServer(spotsRef);
-    const existingNames = new Set(
-      existingSnaps.docs.map((d) => (d.data().name ?? '').toLowerCase().trim())
-    );
-    spotsToWrite = spots.filter(
-      (s) => !existingNames.has((s.name ?? '').toLowerCase().trim())
-    );
-    if (spotsToWrite.length === 0) return 0;
-  } else {
-    // Destructive: remove all existing spots before writing the new set.
-    // Use getDocsFromServer to bypass IndexedDB so stale server docs are visible.
-    const oldSnaps = await getDocsFromServer(spotsRef);
-    if (oldSnaps.docs.length > 0) {
-      const delBatch = writeBatch(db);
-      oldSnaps.docs.forEach((d) => delBatch.delete(d.ref));
-      await delBatch.commit();
-    }
+  // Always read the current server state — needed for the name-based merge lookup.
+  const existingSnaps = await getDocsFromServer(spotsRef);
+  const existingSpots = existingSnaps.docs.map((d) => ({ id: d.id, name: d.data().name ?? '' }));
+
+  const { updates, creates } = planSpotWrites(existingSpots, spots);
+
+  // force=true  → merge-upsert: update matched docs in-place + create new ones
+  // force=false → additive:    only create new docs (skip name-matched existing docs)
+  const toUpdate = force ? updates : [];
+  if (toUpdate.length === 0 && creates.length === 0) return 0;
+
+  const batch = writeBatch(db);
+  const now   = serverTimestamp();
+
+  // Update existing docs — only content fields; ID, createdAt, and user data untouched.
+  // Coords are only overwritten when the incoming spot has a valid geocode result.
+  for (const { id, spot } of toUpdate) {
+    const coordFields = spot.coordsMissing ? {} : {
+      lat:           spot.lat  ?? spot.latitude  ?? null,
+      lng:           spot.lng  ?? spot.longitude ?? null,
+      coordsMissing: false,
+      geocodeSource: spot.geocodeSource ?? null,
+    };
+    batch.update(doc(spotsRef, id), {
+      description:          spot.description          ?? null,
+      whyHidden:            spot.whyHidden            ?? spot.why_hidden          ?? null,
+      hiddennessReason:     spot.hiddennessReason      ?? null,
+      hiddennessScore:      spot.hiddennessScore       ?? spot.hiddenness_score   ?? 1,
+      hiddennessLabel:      spot.hiddennessLabel       ?? spot.hiddenness_label   ?? null,
+      category:             spot.category              ?? null,
+      interests:            spot.interests             ?? [],
+      entryPrice:           spot.entryPrice            ?? spot.entry_price        ?? null,
+      passIncluded:         spot.passIncluded          ?? false,
+      currency:             spot.currency              ?? 'EUR',
+      closureStatus:        spot.closureStatus         ?? 'open',
+      openingHours:         spot.openingHours          ?? null,
+      bestTimeToVisit:      spot.bestTimeToVisit       ?? null,
+      visitDurationMinutes: spot.visitDurationMinutes  ?? null,
+      address:              spot.address               ?? null,
+      neighbourhood:        spot.neighbourhood         ?? null,
+      tips:                 spot.tips                  ?? [],
+      avoid:                spot.avoid                 ?? null,
+      nearbySpots:          spot.nearbySpots           ?? [],
+      editorialConfidence:  spot.editorialConfidence   ?? null,
+      ...coordFields,
+      lastResearchedAt:     now,
+    });
   }
 
-  // Write spots — supports both camelCase (new API) and legacy snake_case fields
-  const batch = writeBatch(db);
-  spotsToWrite.forEach((spot) => {
-    const ref = doc(spotsRef);
-    batch.set(ref, {
+  // Create new docs — supports both camelCase (new API) and legacy snake_case fields
+  for (const spot of creates) {
+    batch.set(doc(spotsRef), {
       city,
       name:                 spot.name,
-      description:          spot.description ?? null,
+      description:          spot.description          ?? null,
       whyHidden:            spot.whyHidden            ?? spot.why_hidden          ?? null,
       hiddennessReason:     spot.hiddennessReason      ?? null,
       hiddennessScore:      spot.hiddennessScore       ?? spot.hiddenness_score   ?? 1,
@@ -379,12 +407,14 @@ export async function cacheSpots(city, spots, force = false) {
       tips:                 spot.tips                  ?? [],
       avoid:                spot.avoid                 ?? null,
       nearbySpots:          spot.nearbySpots           ?? [],
-      createdAt:            serverTimestamp(),
+      editorialConfidence:  spot.editorialConfidence   ?? null,
+      createdAt:            now,
+      lastResearchedAt:     now,
     });
-  });
-  await batch.commit();
+  }
 
-  return spotsToWrite.length;
+  await batch.commit();
+  return toUpdate.length + creates.length;
 }
 
 /** Save (or clear) the accommodation address + geocoords for a trip */
